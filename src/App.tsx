@@ -1,6 +1,7 @@
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import { PresenceProvider } from "./contexts/PresenceContext";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Auth/Login";
 import { Register } from "./pages/Auth/Register";
@@ -49,6 +50,7 @@ function App() {
   return (
     <AuthProvider>
       <UpdateProvider>
+        <PresenceProvider>
         <HashRouter>
           <Routes>
             {/* Public Auth Routes */}
@@ -65,6 +67,7 @@ function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </HashRouter>
+        </PresenceProvider>
       </UpdateProvider>
     </AuthProvider>
   );

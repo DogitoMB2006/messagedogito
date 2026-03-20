@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { arePresenceNotificationsSilenced } from '../lib/presenceNotifyGate';
 
 type UpdateStatusTone = 'info' | 'error';
 
@@ -141,6 +142,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (!granted) {
+      return;
+    }
+
+    if (arePresenceNotificationsSilenced()) {
       return;
     }
 

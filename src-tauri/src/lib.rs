@@ -1,7 +1,8 @@
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Manager,
 };
 
 #[tauri::command]
@@ -24,6 +25,8 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => {
+                        let _ = app.emit("presence-set-offline", ());
+                        std::thread::sleep(Duration::from_millis(450));
                         app.exit(0);
                     }
                     "show" => {

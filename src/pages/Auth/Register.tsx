@@ -5,6 +5,23 @@ import { MessageSquare, Mail, Lock, AtSign } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { supabase } from '../../lib/supabase';
+import type { AuthError } from '@supabase/supabase-js';
+
+function formatSignUpError(err: AuthError): string {
+  const msg = (err.message || '').trim();
+  const combined = `${msg} ${(err as { code?: string }).code || ''}`.toLowerCase();
+  // GoTrue returns this for duplicate email — users often think it means "username".
+  if (
+    combined.includes('user already registered') ||
+    combined.includes('already been registered') ||
+    combined.includes('already registered') ||
+    combined.includes('email address is already') ||
+    combined.includes('user_already_exists')
+  ) {
+    return 'This email is already registered. Try signing in instead.';
+  }
+  return msg || 'Could not create account. Check your email and password.';
+}
 
 export function Register() {
   const [email, setEmail] = useState('');
@@ -21,43 +38,76 @@ export function Register() {
 
     const safeUsername = username.toLowerCase().replace(/\s/g, '');
 
-    // Check if username exists
-    const { data: existingUser } = await supabase
+    if (!safeUsername) {
+      setError('Please choose a username.');
+      setLoading(false);
+      return;
+    }
+
+    // Only trust this when the query succeeds — RLS/permission errors must not look like "taken".
+    const { data: takenRow, error: usernameLookupError } = await supabase
       .from('users')
-      .select('username')
+      .select('id')
       .eq('username', safeUsername)
       .maybeSingle();
 
-    if (existingUser) {
+    if (usernameLookupError) {
+      console.warn('Register: username check skipped', usernameLookupError.message);
+    } else if (takenRow) {
       setError('Username is already taken.');
       setLoading(false);
       return;
     }
 
     const { data, error: signUpError } = await supabase.auth.signUp({
-      email,
+      email: email.trim(),
       password,
+      options: {
+        data: {
+          username: safeUsername,
+          display_name: safeUsername,
+        },
+      },
     });
 
     if (signUpError) {
-      setError(signUpError.message);
+      setError(formatSignUpError(signUpError));
       setLoading(false);
       return;
     }
 
-    if (data.user) {
-      // Create profile
-      const { error: profileError } = await supabase.from('users').insert({
-        id: data.user.id,
-        username: safeUsername,
-        display_name: safeUsername,
-      });
+    if (!data.user) {
+      setError('Sign up did not complete. Please try again.');
+      setLoading(false);
+      return;
+    }
 
-      if (profileError) {
-        setError(profileError.message);
+    // With "confirm email" enabled there is often no session yet — RLS may block this insert.
+    const { error: profileError } = await supabase.from('users').insert({
+      id: data.user.id,
+      username: safeUsername,
+      display_name: safeUsername,
+    });
+
+    if (profileError) {
+      const code = (profileError as { code?: string }).code;
+      const pmsg = profileError.message || '';
+      if (code === '23505' || /unique|duplicate/i.test(pmsg)) {
+        setError('That username is already taken. Pick another and try again.');
         setLoading(false);
         return;
       }
+      if (code === '42501' || /row-level security|policy|permission denied/i.test(pmsg)) {
+        setError(
+          'Account created. If email confirmation is on, open the link in your email, then sign in. Your profile will finish setting up when you log in.',
+        );
+        setLoading(false);
+        navigate('/login');
+        return;
+      }
+      setError(pmsg || 'Could not create your profile.');
+      setLoading(false);
+      return;
     }
 
     setLoading(false);

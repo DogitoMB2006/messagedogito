@@ -4,9 +4,11 @@ import { supabase } from '../lib/supabase';
 import { isGroupLeaveMessage } from '../lib/groupMessageMarkers';
 import { getActiveChatIdForNotifications } from '../lib/activeChatScope';
 import { invalidateChatList } from '../lib/chatListInvalidate';
+import { dispatchMessageRowUpdated } from '../lib/messageRowUpdated';
 import { getHashPathname } from '../lib/hashRouterLocation';
 import { splitLeadingReply, getNotificationMessageBody, isChatMediaUrl } from '../lib/replyMessageFormat';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { arePresenceNotificationsSilenced, runPresenceOfflineBeforeSignOut } from '../lib/presenceNotifyGate';
 
 export interface UserProfile {
   id: string;
@@ -57,6 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    await runPresenceOfflineBeforeSignOut();
     await supabase.auth.signOut();
   };
 
@@ -221,6 +224,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         invalidateChatList();
 
+        if (payload.eventType === 'UPDATE' && payload.new) {
+          const rec = payload.new as Record<string, unknown>;
+          if (rec.id != null && rec.chat_id != null) {
+            dispatchMessageRowUpdated(rec);
+          }
+        }
+
         if (payload.eventType !== 'INSERT' || !payload.new) return;
 
         const row = payload.new as { sender_id?: string; chat_id?: string; content?: string };
@@ -234,6 +244,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         try {
           if (!permissionGranted) return;
+          if (arePresenceNotificationsSilenced()) return;
 
           const content = row.content;
           const senderId = row.sender_id as string;
@@ -331,7 +342,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
          if (isAppFocused && isOnNotifRoute) return;
 
          try {
-           if (permissionGranted) {
+           if (permissionGranted && !arePresenceNotificationsSilenced()) {
              sendNotification({ title: 'New Friend Request! 🥳', body: 'Someone wants to connect with you.' });
            }
          } catch (e) {}

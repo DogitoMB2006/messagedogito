@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { cn } from '../../lib/utils';
+import { peerPresenceLabel, peerPresenceSubtextClass, resolvePeerPresence } from '../../lib/presenceDisplay';
+import { subscribePeerPresenceBroadcast } from '../../lib/presenceBroadcastBridge';
 import { useNavigate } from 'react-router-dom';
 import {
   Clapperboard,
@@ -18,6 +21,8 @@ import {
 import { motion } from 'framer-motion';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
 import { Avatar } from '../ui/avatar';
+import { Modal } from '../ui/modal';
+import { Button } from '../ui/button';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { GifPicker } from './GifPicker';
@@ -25,6 +30,8 @@ import { GroupManageModal } from './GroupManageModal';
 import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
 import { splitLeadingReply, getQuotedMessageLabel, isChatMediaUrl } from '../../lib/replyMessageFormat';
+import { MESSAGE_ROW_UPDATED_EVENT, type MessageRowUpdatedDetail } from '../../lib/messageRowUpdated';
+import { dispatchChatRead, dispatchFriendDmRead, markDmChatRead } from '../../lib/friendDmUnread';
 
 interface ChatWindowProps {
   chatId: string;
@@ -60,6 +67,9 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const [myGroupRole, setMyGroupRole] = useState<any>(null);
   const [isGroupOwner, setIsGroupOwner] = useState(false);
   const [groupManageOpen, setGroupManageOpen] = useState(false);
+  const [pendingDeleteMsg, setPendingDeleteMsg] = useState<any | null>(null);
+  const [deleteMessageBusy, setDeleteMessageBusy] = useState(false);
+  const [deleteMessageError, setDeleteMessageError] = useState<string | null>(null);
   const [friendsForInvite, setFriendsForInvite] = useState<
     { id: string; name: string; username: string; avatarUrl: string | null }[]
   >([]);
@@ -75,6 +85,24 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [replyingToMsg, setReplyingToMsg] = useState<any | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+
+  const dmPeerPresence = useMemo(() => {
+    if (isGroup || !otherUser) return null;
+    return resolvePeerPresence(otherUser.presence_status, otherUser.presence_updated_at);
+  }, [isGroup, otherUser]);
+
+  useEffect(() => {
+    return subscribePeerPresenceBroadcast((p) => {
+      setOtherUser((prev: any) => {
+        if (!prev || String(prev.id) !== String(p.userId)) return prev;
+        return {
+          ...prev,
+          presence_status: p.presence_status,
+          presence_updated_at: p.presence_updated_at,
+        };
+      });
+    });
+  }, []);
 
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -93,6 +121,10 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   /** True after we've successfully loaded this chat as a group (so a missing row = deleted, not a bad DM link). */
   const wasGroupChatRef = useRef(false);
+  const isGroupRef = useRef(false);
+  useEffect(() => {
+    isGroupRef.current = isGroup;
+  }, [isGroup]);
 
   useEffect(() => {
     wasGroupChatRef.current = false;
@@ -132,6 +164,21 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       window.clearTimeout(t2);
     };
   }, [chatId, loading, messages.length, removedFromGroup]);
+
+  /** Same postgres path as sidebar refresh; per-chat Realtime UPDATE can miss peers. */
+  useEffect(() => {
+    const onRowUpdated = (e: Event) => {
+      const record = (e as CustomEvent<MessageRowUpdatedDetail>).detail?.record;
+      if (!record?.id || String(record.chat_id) !== String(chatId)) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m?.id != null && String(m.id) === String(record.id) ? { ...m, ...record } : m,
+        ),
+      );
+    };
+    window.addEventListener(MESSAGE_ROW_UPDATED_EVENT, onRowUpdated);
+    return () => window.removeEventListener(MESSAGE_ROW_UPDATED_EVENT, onRowUpdated);
+  }, [chatId]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = messagesScrollRef.current;
@@ -321,7 +368,35 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     const contentToStore = isReply ? prefix + next : next;
 
     try {
-      await supabase.from('messages').update({ content: contentToStore }).eq('id', editingMessageId);
+      const { data: updatedRow, error } = await supabase
+        .from('messages')
+        .update({ content: contentToStore })
+        .eq('id', editingMessageId)
+        .select('*')
+        .single();
+
+      if (error) {
+        console.error('Failed to update message', error);
+        alert(error.message || 'Failed to save message edit.');
+        return;
+      }
+
+      if (updatedRow) {
+        setMessages((prev) =>
+          prev.map((m) => (m?.id != null && String(m.id) === String(updatedRow.id) ? { ...m, ...updatedRow } : m)),
+        );
+      }
+
+      try {
+        await realtimeChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'message_updated',
+          payload: { record: updatedRow },
+        });
+      } catch (e) {
+        console.warn('message_updated broadcast failed', e);
+      }
+
       cancelEditingMessage();
     } catch (e) {
       console.error('Failed to update message', e);
@@ -332,19 +407,51 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const canDeleteOthersMsgs = isGroupOwner || Boolean(myGroupRole?.can_delete_others_messages);
   const canKickMembers = isGroupOwner || Boolean(myGroupRole?.can_kick);
 
-  const deleteMessage = async (msg: any) => {
+  const deleteMessageModalDescription = useMemo(() => {
+    const msg = pendingDeleteMsg;
+    if (!msg || !user) return '';
+    const own = String(msg.sender_id) === String(user.id);
+    if (own) {
+      return isGroup
+        ? 'This will permanently remove your message for everyone in the group. This cannot be undone.'
+        : 'This will permanently remove your message for both of you. This cannot be undone.';
+    }
+    const peerName = isGroup
+      ? (msg.sender_id ? senderNameById[msg.sender_id] : null) || 'this member'
+      : otherUser?.display_name || 'this message';
+    return `This will permanently remove ${peerName}'s message for everyone in this chat. This cannot be undone.`;
+  }, [pendingDeleteMsg, user, isGroup, senderNameById, otherUser?.display_name]);
+
+  const requestDeleteMessage = (msg: any) => {
+    if (!user || !msg?.id || removedFromGroup) return;
+    const isOwn = msg.sender_id === user.id;
+    if (!isOwn && !canDeleteOthersMsgs) return;
+    setDeleteMessageError(null);
+    setPendingDeleteMsg(msg);
+    closeContextMenu();
+  };
+
+  const cancelDeleteMessageModal = () => {
+    if (deleteMessageBusy) return;
+    setPendingDeleteMsg(null);
+    setDeleteMessageError(null);
+  };
+
+  const performDeleteMessage = async () => {
+    const msg = pendingDeleteMsg;
     if (!user || !msg?.id || removedFromGroup) return;
     const isOwn = msg.sender_id === user.id;
     if (!isOwn && !canDeleteOthersMsgs) return;
 
-    const confirmed = window.confirm('Delete this message?');
-    if (!confirmed) return;
+    setDeleteMessageBusy(true);
+    setDeleteMessageError(null);
 
     const del = supabase.from('messages').delete().eq('id', msg.id);
     const { error } = isOwn ? await del.eq('sender_id', user.id) : await del;
     if (error) {
       console.error('Failed to delete message', error);
-      alert('Failed to delete message.');
+      setDeleteMessageError(error.message || 'Could not delete this message. Please try again.');
+      setDeleteMessageBusy(false);
       return;
     }
 
@@ -353,7 +460,8 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     if (replyingToMsg?.id && String(replyingToMsg.id) === mid) {
       setReplyingToMsg(null);
     }
-    closeContextMenu();
+    setPendingDeleteMsg(null);
+    setDeleteMessageBusy(false);
 
     try {
       await realtimeChannelRef.current?.send({
@@ -569,6 +677,14 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     [chatId, user?.id],
   );
 
+  useEffect(() => {
+    if (!user?.id || !chatId || isGroup || removedFromGroup || loading || !otherUser?.id) return;
+    void (async () => {
+      await markDmChatRead(supabase, chatId);
+      dispatchFriendDmRead(otherUser.id);
+    })();
+  }, [chatId, isGroup, removedFromGroup, loading, otherUser?.id, user?.id]);
+
   const broadcastGroupSyncToPeers = useCallback(() => {
     try {
       void realtimeChannelRef.current?.send({
@@ -593,16 +709,30 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           'postgres_changes',
           { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
           (payload) => {
-            const row = payload.new;
+            const row = payload.new as { sender_id?: string } | null;
             setMessages((prev) => mergeMessageList(prev, row));
             requestAnimationFrame(() => scrollToBottom('smooth'));
+            if (row?.sender_id && user?.id && String(row.sender_id) !== String(user.id)) {
+              void markDmChatRead(supabase, chatId);
+              if (isGroupRef.current) dispatchChatRead(chatId);
+              else dispatchFriendDmRead(String(row.sender_id));
+            }
           },
         )
         .on('broadcast', { event: 'message_inserted' }, ({ payload }) => {
-          const record = payload?.record as { id?: unknown; chat_id?: string } | undefined;
+          const record = payload?.record as {
+            id?: unknown;
+            chat_id?: string;
+            sender_id?: string;
+          } | undefined;
           if (!record?.id || String(record.chat_id) !== String(chatId)) return;
           setMessages((prev) => mergeMessageList(prev, record));
           requestAnimationFrame(() => scrollToBottom('smooth'));
+          if (record.sender_id && user?.id && String(record.sender_id) !== String(user.id)) {
+            void markDmChatRead(supabase, chatId);
+            if (isGroupRef.current) dispatchChatRead(chatId);
+            else dispatchFriendDmRead(String(record.sender_id));
+          }
         })
         .on('broadcast', { event: 'group_sync' }, ({ payload }) => {
           const p = payload as { chatId?: string } | undefined;
@@ -637,9 +767,13 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           'postgres_changes',
           { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
           (payload) => {
-            const updated = payload?.new;
+            const updated = payload?.new as Record<string, unknown> | undefined;
             if (!updated?.id) return;
-            setMessages((prev) => prev.map((m) => (m?.id && String(m.id) === String(updated.id) ? updated : m)));
+            setMessages((prev) =>
+              prev.map((m) =>
+                m?.id != null && String(m.id) === String(updated.id) ? { ...m, ...updated } : m,
+              ),
+            );
           },
         )
         .on(
@@ -682,6 +816,22 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             void loadChat({ silent: true });
           },
         )
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, (payload) => {
+          const row = payload.new as {
+            id?: string;
+            presence_status?: string | null;
+            presence_updated_at?: string | null;
+          } | null;
+          if (!row?.id) return;
+          setOtherUser((prev: any) => {
+            if (!prev || String(prev.id) !== String(row.id)) return prev;
+            return {
+              ...prev,
+              presence_status: row.presence_status ?? prev.presence_status,
+              presence_updated_at: row.presence_updated_at ?? prev.presence_updated_at,
+            };
+          });
+        })
         .subscribe();
 
       realtimeChannelRef.current = channel;
@@ -779,8 +929,23 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             <h2 className="font-semibold text-foreground group-hover:text-primary transition-colors">
               {isGroup ? chatRow?.name || 'Group' : otherUser?.display_name || 'Loading...'}
             </h2>
-            <p className="text-xs text-green-500 font-medium tracking-wide">
-              {isGroup ? `${Object.keys(senderNameById).length} members` : 'Online'}
+            <p
+              className={cn(
+                'text-xs font-medium tracking-wide',
+                isGroup
+                  ? 'text-muted-foreground'
+                  : dmPeerPresence
+                    ? peerPresenceSubtextClass(dmPeerPresence)
+                    : 'text-muted-foreground',
+              )}
+            >
+              {isGroup
+                ? `${Object.keys(senderNameById).length} members`
+                : otherUser
+                  ? dmPeerPresence
+                    ? peerPresenceLabel(dmPeerPresence)
+                    : 'Offline'
+                  : '…'}
             </p>
           </div>
         </div>
@@ -998,7 +1163,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                       )}
                       <button
                         type="button"
-                        onClick={() => void deleteMessage(msg)}
+                        onClick={() => requestDeleteMessage(msg)}
                         className="inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300 hover:bg-red-500/15"
                         aria-label="Delete message"
                       >
@@ -1010,7 +1175,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                   {!isMe && !isEditingThis && canDeleteOthersMsgs && (
                     <button
                       type="button"
-                      onClick={() => void deleteMessage(msg)}
+                      onClick={() => requestDeleteMessage(msg)}
                       className="inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300"
                       aria-label="Delete message"
                     >
@@ -1263,7 +1428,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
               className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
               onClick={() => {
                 if (!contextMenuMsg) return;
-                void deleteMessage(contextMenuMsg);
+                requestDeleteMessage(contextMenuMsg);
               }}
             >
               Delete
@@ -1280,6 +1445,35 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           </button>
         </div>
       )}
+
+      <Modal
+        isOpen={pendingDeleteMsg != null}
+        onClose={cancelDeleteMessageModal}
+        title="Delete message?"
+        description={deleteMessageModalDescription}
+        size="sm"
+      >
+        {deleteMessageError ? (
+          <p className="text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2 mb-4">
+            {deleteMessageError}
+          </p>
+        ) : null}
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" disabled={deleteMessageBusy} onClick={cancelDeleteMessageModal}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            disabled={deleteMessageBusy}
+            className="gap-2 border border-red-500/30 shadow-sm shadow-red-900/20"
+            onClick={() => void performDeleteMessage()}
+          >
+            {deleteMessageBusy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Trash2 className="h-4 w-4" aria-hidden />}
+            {deleteMessageBusy ? 'Deleting…' : 'Delete message'}
+          </Button>
+        </div>
+      </Modal>
 
       {isGroup && (
         <GroupManageModal

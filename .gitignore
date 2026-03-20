@@ -41,3 +41,7 @@ supabase/group_notifications_mute.sql
 .gitignore
 supabase/group_owner_transfer_and_delete.sql
 supabase/group_leave.sql
+supabase/friend_dm_unread.sql
+.gitignore
+supabase/users_presence_realtime_rls.sql
+supabase/user_presence.sql

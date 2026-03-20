@@ -11,6 +11,15 @@ import { useNavigate } from 'react-router-dom';
 import { LeaveGroupModal } from './LeaveGroupModal';
 import { CHAT_LIST_INVALIDATE_EVENT } from '../../lib/chatListInvalidate';
 import { getSidebarPreviewText } from '../../lib/replyMessageFormat';
+import { resolvePeerPresence, presenceShowsActivityDot, presenceDotClass } from '../../lib/presenceDisplay';
+import { subscribePeerPresenceBroadcast } from '../../lib/presenceBroadcastBridge';
+import { PresenceStatusControl } from './PresenceStatusControl';
+import {
+  CHAT_READ_EVENT,
+  FRIEND_DM_READ_EVENT,
+  fetchUnreadCountByChatId,
+  formatFriendUnreadBadge,
+} from '../../lib/friendDmUnread';
 
 interface ChatListProps {
   activeChat: string | null;
@@ -21,6 +30,8 @@ interface ChatListProps {
 
 export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: ChatListProps) {
   const { user } = useAuth();
+  const activeChatRef = useRef<string | null>(activeChat);
+  activeChatRef.current = activeChat;
   const [chats, setChats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [ctxMenu, setCtxMenu] = useState<{ chat: any; left: number; top: number } | null>(null);
@@ -80,6 +91,8 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       if (row) lastByChat.set(cid, row as { content: string; created_at: string });
     });
 
+    const unreadByChatId = await fetchUnreadCountByChatId(supabase);
+
     const mapped = myParticipants.map((p) => {
       const chat = Array.isArray(p.chats) ? p.chats[0] : p.chats;
       const isGroup = Boolean(chat?.is_group);
@@ -88,6 +101,8 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       let name = 'Chat';
       let avatar: string | undefined;
       let otherUserId: string | undefined;
+      let peerPresenceStatus: string | null = null;
+      let peerPresenceUpdatedAt: string | null = null;
 
       if (isGroup) {
         name = (chat?.name as string) || 'Group';
@@ -99,7 +114,12 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
         name = otherUser?.display_name || 'Unknown User';
         avatar = otherUser?.avatar_url;
         otherUserId = otherUser?.id;
+        const ou = otherUser as { presence_status?: string; presence_updated_at?: string } | null;
+        peerPresenceStatus = ou?.presence_status ?? null;
+        peerPresenceUpdatedAt = ou?.presence_updated_at ?? null;
       }
+
+      const unread = unreadByChatId.get(p.chat_id) ?? 0;
 
       return {
         id: p.chat_id,
@@ -107,8 +127,9 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
         avatar,
         lastMessage: lastMessage ? getSidebarPreviewText(lastMessage.content) : 'Started a chat',
         time: lastMessage ? new Date(lastMessage.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
-        unread: 0,
-        isOnline: !isGroup,
+        unread,
+        peerPresenceStatus,
+        peerPresenceUpdatedAt,
         lastMsgTimeRaw: lastMessage ? new Date(lastMessage.created_at).getTime() : 0,
         otherUserId,
         isGroup,
@@ -121,6 +142,48 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
     setChats(dedup);
     setLoading(false);
   }, [user?.id]);
+
+  useEffect(() => {
+    const onDmRead = (e: Event) => {
+      const d = (e as CustomEvent<{ friendId?: string }>).detail;
+      if (!d?.friendId) return;
+      setChats((prev) =>
+        prev.map((c) =>
+          c.otherUserId != null && String(c.otherUserId) === String(d.friendId) ? { ...c, unread: 0 } : c,
+        ),
+      );
+    };
+    window.addEventListener(FRIEND_DM_READ_EVENT, onDmRead);
+    return () => window.removeEventListener(FRIEND_DM_READ_EVENT, onDmRead);
+  }, []);
+
+  useEffect(() => {
+    const onChatRead = (e: Event) => {
+      const d = (e as CustomEvent<{ chatId?: string }>).detail;
+      if (!d?.chatId) return;
+      setChats((prev) =>
+        prev.map((c) => (String(c.id) === String(d.chatId) ? { ...c, unread: 0 } : c)),
+      );
+    };
+    window.addEventListener(CHAT_READ_EVENT, onChatRead);
+    return () => window.removeEventListener(CHAT_READ_EVENT, onChatRead);
+  }, []);
+
+  useEffect(() => {
+    return subscribePeerPresenceBroadcast((p) => {
+      setChats((prev) =>
+        prev.map((c) =>
+          c.otherUserId != null && String(c.otherUserId) === String(p.userId)
+            ? {
+                ...c,
+                peerPresenceStatus: p.presence_status,
+                peerPresenceUpdatedAt: p.presence_updated_at,
+              }
+            : c,
+        ),
+      );
+    });
+  }, []);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -143,6 +206,40 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
         },
         () => {
           void loadChats();
+        },
+      )
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, (payload) => {
+        const row = payload.new as {
+          id?: string;
+          presence_status?: string | null;
+          presence_updated_at?: string | null;
+        } | null;
+        if (!row?.id) return;
+        setChats((prev) =>
+          prev.map((c) =>
+            c.otherUserId === row.id
+              ? {
+                  ...c,
+                  peerPresenceStatus: row.presence_status ?? null,
+                  peerPresenceUpdatedAt: row.presence_updated_at ?? null,
+                }
+              : c,
+          ),
+        );
+      })
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const row = payload.new as { chat_id?: string; sender_id?: string } | null;
+          if (!row?.chat_id || !row.sender_id || String(row.sender_id) === String(user.id)) return;
+          setChats((prev) =>
+            prev.map((c) => {
+              if (String(c.id) !== String(row.chat_id)) return c;
+              if (String(activeChatRef.current) === String(c.id)) return c;
+              return { ...c, unread: Math.min(100, (c.unread ?? 0) + 1) };
+            }),
+          );
         },
       )
       .subscribe();
@@ -213,11 +310,19 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
   return (
     <div className="flex flex-col h-full bg-background/50 backdrop-blur-sm">
       {/* Header */}
-      <div className="p-4 flex items-center justify-between border-b border-border/30">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">Messages</h1>
-        <button onClick={() => navigate('/friends')} className="h-9 w-9 flex items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-          <Plus size={20} />
-        </button>
+      <div className="p-4 flex items-center justify-between gap-2 border-b border-border/30">
+        <h1 className="text-2xl font-bold tracking-tight text-foreground shrink-0">Messages</h1>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <PresenceStatusControl />
+          <button
+            type="button"
+            title="Friends"
+            onClick={() => navigate('/friends')}
+            className="h-9 w-9 flex items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+          >
+            <Plus size={20} />
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -240,7 +345,12 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
               key={chat.id}
               whileHover={{ scale: 1.01 }}
               whileTap={{ scale: 0.99 }}
-              onClick={() => onSelectChat(chat.id)}
+              onClick={() => {
+                if ((chat.unread ?? 0) > 0) {
+                  setChats((prev) => prev.map((c) => (c.id === chat.id ? { ...c, unread: 0 } : c)));
+                }
+                onSelectChat(chat.id);
+              }}
               onContextMenu={(e) => {
                 if (!chat.isGroup) return;
                 e.preventDefault();
@@ -266,14 +376,32 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
             >
               <div className="relative shrink-0">
                 <Avatar fallback={chat.name} src={chat.avatar} />
-                {!chat.isGroup && chat.isOnline && (
-                  <span className="absolute bottom-0 right-0 w-3 h-3 border-2 border-background bg-green-500 rounded-full" />
-                )}
+                {(() => {
+                  const peerP = resolvePeerPresence(chat.peerPresenceStatus, chat.peerPresenceUpdatedAt);
+                  return !chat.isGroup && presenceShowsActivityDot(peerP) ? (
+                    <span
+                      className={cn(
+                        'absolute bottom-0 right-0 w-3 h-3 border-2 border-background rounded-full',
+                        presenceDotClass(peerP),
+                      )}
+                    />
+                  ) : null;
+                })()}
               </div>
               
               <div className="flex-1 min-w-0 flex flex-col justify-center">
-                <div className="flex justify-between items-baseline mb-1">
-                  <span className="font-semibold text-sm truncate text-foreground">{chat.name}</span>
+                <div className="flex justify-between items-baseline mb-1 gap-2 min-w-0">
+                  <span className="font-semibold text-sm truncate text-foreground flex items-center gap-1.5 min-w-0">
+                    <span className="truncate">{chat.name}</span>
+                    {(chat.unread ?? 0) > 0 ? (
+                      <span
+                        className="shrink-0 min-w-[1.2rem] h-[1.15rem] px-1 rounded-full bg-red-600 text-white text-[9px] font-bold leading-none inline-flex items-center justify-center"
+                        aria-label={`${chat.unread} unread`}
+                      >
+                        {formatFriendUnreadBadge(chat.unread ?? 0)}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className={cn("text-xs whitespace-nowrap ml-2", chat.unread > 0 ? "text-primary font-medium" : "text-muted-foreground")}>
                     {chat.time}
                   </span>
