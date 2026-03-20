@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { isGroupLeaveMessage } from '../lib/groupMessageMarkers';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 
 export interface UserProfile {
@@ -184,11 +185,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           const content = payload.new.content;
           const senderId = payload.new.sender_id as string;
+          const chatId = payload.new.chat_id as string;
           const sender = await getSenderMeta(senderId);
+
+          const { data: chatInfo } = await supabase
+            .from('chats')
+            .select('name, is_group')
+            .eq('id', chatId)
+            .maybeSingle();
+          const groupName = chatInfo?.is_group && chatInfo?.name ? String(chatInfo.name) : null;
+
+          if (chatInfo?.is_group) {
+            const { data: myPart } = await supabase
+              .from('chat_participants')
+              .select('notifications_muted')
+              .eq('chat_id', chatId)
+              .eq('user_id', user.id)
+              .maybeSingle();
+            if (myPart?.notifications_muted === true) return;
+          }
+
+          if (typeof content === 'string' && isGroupLeaveMessage(content)) {
+            sendNotification({
+              title: groupName || 'Group',
+              body: `${sender.name} left the group`,
+            });
+            return;
+          }
 
           if (isMediaUrl(content)) {
             const kind = getMediaKind(content);
-            const title = kind === 'gif' ? `${sender.name} sent you a GIF` : `${sender.name} sent you an image`;
+            const mediaBit = kind === 'gif' ? 'a GIF' : 'an image';
+            const title = groupName
+              ? `${groupName}: ${sender.name} sent ${mediaBit}`
+              : kind === 'gif'
+                ? `${sender.name} sent you a GIF`
+                : `${sender.name} sent you an image`;
             sendNotification({
               title,
               body: 'Open chat to view.',
@@ -202,9 +234,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 : undefined,
             });
           } else {
-            // Plain text message
+            const title = groupName
+              ? `${groupName}: ${sender.name}`
+              : `${sender.name} sent you a message`;
             sendNotification({
-              title: `${sender.name} sent you a message`,
+              title,
               body: payload.new.content,
             });
           }

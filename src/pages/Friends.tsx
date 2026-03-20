@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
-import { Search, UserPlus, MessageSquare, Loader2 } from 'lucide-react';
+import { Search, UserPlus, MessageSquare, Loader2, Users } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { Avatar } from '../components/ui/avatar';
@@ -9,6 +9,8 @@ import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { CreateGroupModal } from '../components/chat/CreateGroupModal';
+import { findOrCreateDmChatId } from '../lib/dm';
 
 export function Friends() {
   const { user } = useAuth();
@@ -20,6 +22,7 @@ export function Friends() {
   
   const [friends, setFriends] = useState<any[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(true);
+  const [createGroupOpen, setCreateGroupOpen] = useState(false);
   
   const navigate = useNavigate();
 
@@ -114,30 +117,9 @@ export function Friends() {
 
   const startChat = async (friendId: string) => {
     if (!user) return;
-    
-    // Check if direct chat already exists
-    const { data: myChats } = await supabase.from('chat_participants').select('chat_id').eq('user_id', user.id);
-    const myChatIds = myChats?.map(c => c.chat_id) || [];
-    
-    if (myChatIds.length > 0) {
-      const { data: common } = await supabase.from('chat_participants').select('chat_id').eq('user_id', friendId).in('chat_id', myChatIds);
-      if (common && common.length > 0) {
-        navigate(`/?id=${common[0].chat_id}`);
-        return;
-      }
-    }
-    
-    // Create new chat
-    const { data: newChat, error: chatErr } = await supabase.from('chats').insert({ is_group: false }).select().single();
-    if (newChat && !chatErr) {
-      await supabase.from('chat_participants').insert([
-        { chat_id: newChat.id, user_id: user.id },
-        { chat_id: newChat.id, user_id: friendId }
-      ]);
-      navigate(`/?id=${newChat.id}`);
-    } else {
-      console.error(chatErr);
-    }
+    const result = await findOrCreateDmChatId(supabase, user.id, friendId);
+    if ('chatId' in result) navigate(`/?id=${result.chatId}`);
+    else console.error(result.error);
   };
 
   return (
@@ -148,10 +130,21 @@ export function Friends() {
             <h1 className="text-3xl font-bold tracking-tight text-foreground">Friends</h1>
             <p className="text-muted-foreground mt-2">Manage your connections and find new people.</p>
           </div>
-          <Button onClick={() => { setIsAddFriendOpen(true); setAddError(null); setAddSuccess(null); }} className="gap-2 shadow-lg shadow-primary/20 shrink-0">
-            <UserPlus size={18} />
-            <span>Add Friend</span>
-          </Button>
+          <div className="flex flex-wrap gap-2 shrink-0 justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCreateGroupOpen(true)}
+              className="gap-2 border-border/50 bg-secondary/20 hover:bg-secondary/40"
+            >
+              <Users size={18} />
+              <span>Create group</span>
+            </Button>
+            <Button onClick={() => { setIsAddFriendOpen(true); setAddError(null); setAddSuccess(null); }} className="gap-2 shadow-lg shadow-primary/20">
+              <UserPlus size={18} />
+              <span>Add Friend</span>
+            </Button>
+          </div>
         </div>
 
         <div className="mb-6 relative">
@@ -203,8 +196,25 @@ export function Friends() {
         )}
       </div>
 
-      <Modal isOpen={isAddFriendOpen} onClose={() => setIsAddFriendOpen(false)} title="Add Friend">
-        <form className="space-y-6 pt-4" onSubmit={handleAddFriend}>
+      <CreateGroupModal
+        isOpen={createGroupOpen}
+        onClose={() => setCreateGroupOpen(false)}
+        friends={friends.map((f) => ({
+          id: f.id,
+          name: f.name,
+          username: f.username,
+          avatarUrl: f.avatarUrl,
+        }))}
+        onCreated={(id) => navigate(`/?id=${id}`)}
+      />
+
+      <Modal
+        isOpen={isAddFriendOpen}
+        onClose={() => setIsAddFriendOpen(false)}
+        title="Add friend"
+        description="Send a request using their exact username."
+      >
+        <form className="space-y-6" onSubmit={handleAddFriend}>
           {addError && <div className="p-3 text-sm text-red-500 bg-red-500/10 rounded-md border border-red-500/20">{addError}</div>}
           {addSuccess && <div className="p-3 text-sm text-green-500 bg-green-500/10 rounded-md border border-green-500/20">{addSuccess}</div>}
           

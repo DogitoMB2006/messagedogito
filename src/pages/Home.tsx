@@ -3,7 +3,8 @@ import { MainLayout } from '../components/layout/MainLayout';
 import { ChatList } from '../components/chat/ChatList';
 import { ChatWindow } from '../components/chat/ChatWindow';
 import { FriendProfileSidebar } from '../components/chat/FriendProfileSidebar';
-import { AnimatePresence } from 'framer-motion';
+import { GroupProfileSidebar } from '../components/chat/GroupProfileSidebar';
+import { UserPeekSidebar } from '../components/chat/UserPeekSidebar';
 import { MessageSquareDashed } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
@@ -14,25 +15,40 @@ export function Home() {
   const { user } = useAuth();
   const [activeChat, setActiveChat] = useState<string | null>(searchParams.get('id'));
   const [showProfile, setShowProfile] = useState(false);
+  const [peekUserId, setPeekUserId] = useState<string | null>(null);
   const [activeFriendId, setActiveFriendId] = useState<string | null>(null);
+  const [activeChatIsGroup, setActiveChatIsGroup] = useState(false);
 
   useEffect(() => {
     setActiveChat(searchParams.get('id'));
   }, [searchParams]);
 
   useEffect(() => {
-    if (activeChat && user) {
-      const getFriendId = async () => {
-        const { data } = await supabase
-          .from('chat_participants')
-          .select('user_id')
-          .eq('chat_id', activeChat)
-          .neq('user_id', user.id)
-          .maybeSingle();
-        if (data) setActiveFriendId(data.user_id);
-      };
-      getFriendId();
+    setPeekUserId(null);
+  }, [activeChat]);
+
+  useEffect(() => {
+    if (!activeChat || !user) {
+      setActiveFriendId(null);
+      setActiveChatIsGroup(false);
+      return;
     }
+    (async () => {
+      const { data: chat } = await supabase.from('chats').select('is_group').eq('id', activeChat).maybeSingle();
+      const isGroup = Boolean(chat?.is_group);
+      setActiveChatIsGroup(isGroup);
+      if (isGroup) {
+        setActiveFriendId(null);
+        return;
+      }
+      const { data } = await supabase
+        .from('chat_participants')
+        .select('user_id')
+        .eq('chat_id', activeChat)
+        .neq('user_id', user.id)
+        .maybeSingle();
+      setActiveFriendId(data?.user_id ?? null);
+    })();
   }, [activeChat, user]);
 
   return (
@@ -40,11 +56,14 @@ export function Home() {
       <div className="flex h-full w-full overflow-hidden bg-background">
         {/* Left Side: Chats & Friends List */}
         <div className="w-full md:w-80 lg:w-[350px] shrink-0 border-r border-border/50 h-full flex flex-col">
-          <ChatList 
-            activeChat={activeChat} 
+          <ChatList
+            activeChat={activeChat}
             onSelectChat={(id) => {
               setSearchParams({ id });
-            }} 
+            }}
+            onClearActiveIfMatch={(leftChatId) => {
+              if (activeChat === leftChatId) setSearchParams({});
+            }}
           />
         </div>
 
@@ -53,8 +72,15 @@ export function Home() {
           {activeChat ? (
             <ChatWindow 
               chatId={activeChat} 
-              onToggleProfile={() => setShowProfile(!showProfile)} 
+              onToggleProfile={() => {
+                setPeekUserId(null);
+                setShowProfile((p) => !p);
+              }} 
               isProfileOpen={showProfile}
+              onPeekUser={(id) => {
+                setShowProfile(false);
+                setPeekUserId(id);
+              }}
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted-foreground bg-secondary/10">
@@ -71,22 +97,36 @@ export function Home() {
           )}
         </div>
 
-        {/* Right Side (inner): Friend Profile Info */}
-        <AnimatePresence>
-          {showProfile && activeChat && activeFriendId && (
-            <>
-              <button
-                type="button"
-                aria-label="Close profile panel overlay"
-                className="hidden md:block absolute inset-y-0 left-0 right-20 bg-black/35 z-20"
-                onClick={() => setShowProfile(false)}
-              />
-              <div className="hidden md:block absolute top-0 right-20 h-full w-[300px] border-l border-border/50 bg-background z-30 shadow-[-12px_0_30px_rgba(0,0,0,0.25)]">
-                <FriendProfileSidebar userId={activeFriendId} onClose={() => setShowProfile(false)} />
-              </div>
-            </>
-          )}
-        </AnimatePresence>
+        {/* Right Side (inner): member peek (group) / profile / group info */}
+        {((peekUserId && activeChat) || (showProfile && activeChat && (activeChatIsGroup || activeFriendId))) && (
+          <>
+            <button
+              type="button"
+              aria-label="Close profile panel overlay"
+              className="hidden md:block absolute inset-y-0 left-0 right-20 bg-black/35 z-20"
+              onClick={() => {
+                setShowProfile(false);
+                setPeekUserId(null);
+              }}
+            />
+            <div className="hidden md:block absolute top-0 right-20 h-full w-[300px] border-l border-border/50 bg-background z-30 shadow-[-12px_0_30px_rgba(0,0,0,0.25)]">
+              {peekUserId ? (
+                <UserPeekSidebar userId={peekUserId} onClose={() => setPeekUserId(null)} />
+              ) : activeChatIsGroup ? (
+                <GroupProfileSidebar
+                  chatId={activeChat}
+                  onClose={() => setShowProfile(false)}
+                  onLeftGroup={() => {
+                    setShowProfile(false);
+                    setSearchParams({});
+                  }}
+                />
+              ) : (
+                <FriendProfileSidebar userId={activeFriendId!} onClose={() => setShowProfile(false)} />
+              )}
+            </div>
+          </>
+        )}
       </div>
     </MainLayout>
   );

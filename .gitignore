@@ -33,3 +33,11 @@ dist-ssr
 *.key
 *.key.pub
 PUBLISHING.md
+supabase/group_chats_schema.sql
+.gitignore
+.gitignore
+supabase/messages_rls_and_realtime.sql
+supabase/group_notifications_mute.sql
+.gitignore
+supabase/group_owner_transfer_and_delete.sql
+supabase/group_leave.sql

@@ -1,43 +1,38 @@
-import { useEffect, useState } from 'react';
-import { Search, Plus, Loader2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Search, Plus, Loader2, LogOut } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Avatar } from '../ui/avatar';
 import { cn } from '../../lib/utils';
 import { motion } from 'framer-motion';
-import twemoji from 'twemoji';
 import { useAuth } from '../../contexts/AuthContext';
+import { formatChatMessageHtml } from '../../lib/chatRichText';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
+import { isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
+import { LeaveGroupModal } from './LeaveGroupModal';
 
 interface ChatListProps {
   activeChat: string | null;
   onSelectChat: (id: string) => void;
+  /** Clear home URL when user leaves this chat (same id as active). */
+  onClearActiveIfMatch?: (chatId: string) => void;
 }
 
-export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
+export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: ChatListProps) {
   const { user } = useAuth();
   const [chats, setChats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [ctxMenu, setCtxMenu] = useState<{ chat: any; left: number; top: number } | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<{ id: string; name: string; isOwner: boolean } | null>(null);
+  const [leaveLoading, setLeaveLoading] = useState(false);
+  const ctxMenuRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
-  const escapeHtml = (unsafe: string) =>
-    unsafe
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-
-  const toEmojiHtml = (text: string) => {
-    const safe = escapeHtml(text);
-    return twemoji.parse(safe, {
-      folder: 'svg',
-      ext: '.svg',
-      base: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/',
-    });
-  };
+  const toEmojiHtml = (text: string) =>
+    formatChatMessageHtml(text, { multilineBreaks: false, emoji: true });
 
   const getMessagePreview = (content: any) => {
     if (typeof content !== 'string' || !content.trim()) return 'Started a chat';
+    if (isGroupLeaveMessage(content)) return 'Left the group';
 
     const v = content.trim().toLowerCase();
     if (v.includes('.gif')) return 'GIF';
@@ -46,79 +41,160 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
     return content;
   };
 
-  useEffect(() => {
-    if (user) {
-      loadChats();
-      // Subscribe to messages changes across all chats I am in
-      const channel = supabase.channel('public:messages:all')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
-          loadChats(); // Reload to update last messages
-        })
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
-          loadChats(); // Reload to update last messages
-        })
-        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, () => {
-          loadChats(); // Reload to update last messages
-        })
-        .subscribe();
-      return () => { supabase.removeChannel(channel); };
-    }
-  }, [user]);
+  const loadChats = useCallback(async () => {
+    const uid = user?.id;
+    if (!uid) return;
 
-  const loadChats = async () => {
-    if (!user) return;
-    
-    // 1. Get my chat IDs
-    const { data: myParticipants } = await supabase.from('chat_participants').select('chat_id').eq('user_id', user.id);
+    const { data: myParticipants } = await supabase
+      .from('chat_participants')
+      .select('chat_id, chats(*)')
+      .eq('user_id', uid);
+
     if (!myParticipants || myParticipants.length === 0) {
       setChats([]);
       setLoading(false);
       return;
     }
-    
-    const chatIds = myParticipants.map(p => p.chat_id);
-    
-    // 2. Get the other participant in these chats
+
+    const chatIds = [...new Set(myParticipants.map((p) => p.chat_id))];
+
     const { data: otherParticipants } = await supabase
       .from('chat_participants')
-      .select('chat_id, users:users(*)')
+      .select('chat_id, user_id, users:users(*)')
       .in('chat_id', chatIds)
-      .neq('user_id', user.id);
-      
-    if (!otherParticipants) {
-      setLoading(false);
-      return;
+      .neq('user_id', uid);
+
+    const othersByChat = new Map<string, typeof otherParticipants>();
+    for (const row of otherParticipants || []) {
+      const list = othersByChat.get(row.chat_id) || [];
+      list.push(row);
+      othersByChat.set(row.chat_id, list);
     }
 
-    // 3. Get all messages for these chats to find the last message
-    // Note: In a production app, you'd use a dedicated SQL View or RPC
     const { data: messages } = await supabase
       .from('messages')
       .select('chat_id, content, created_at')
       .in('chat_id', chatIds)
       .order('created_at', { ascending: false });
 
-    const mapped = otherParticipants.map(p => {
-      const otherUser = Array.isArray(p.users) ? p.users[0] : p.users;
-      const chatMessages = messages?.filter(m => m.chat_id === p.chat_id) || [];
+    const mapped = myParticipants.map((p) => {
+      const chat = Array.isArray(p.chats) ? p.chats[0] : p.chats;
+      const isGroup = Boolean(chat?.is_group);
+      const chatMessages = messages?.filter((m) => m.chat_id === p.chat_id) || [];
       const lastMessage = chatMessages.length > 0 ? chatMessages[0] : null;
+
+      let name = 'Chat';
+      let avatar: string | undefined;
+      let otherUserId: string | undefined;
+
+      if (isGroup) {
+        name = (chat?.name as string) || 'Group';
+        avatar = (chat?.avatar_url as string) || undefined;
+      } else {
+        const others = othersByChat.get(p.chat_id) || [];
+        const row = others[0];
+        const otherUser = row?.users ? (Array.isArray(row.users) ? row.users[0] : row.users) : null;
+        name = otherUser?.display_name || 'Unknown User';
+        avatar = otherUser?.avatar_url;
+        otherUserId = otherUser?.id;
+      }
 
       return {
         id: p.chat_id,
-        name: otherUser?.display_name || 'Unknown User',
-        avatar: otherUser?.avatar_url,
+        name,
+        avatar,
         lastMessage: lastMessage ? getMessagePreview(lastMessage.content) : 'Started a chat',
         time: lastMessage ? new Date(lastMessage.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
         unread: 0,
-        isOnline: true, // Mock online status
+        isOnline: !isGroup,
         lastMsgTimeRaw: lastMessage ? new Date(lastMessage.created_at).getTime() : 0,
-        otherUserId: otherUser?.id,
+        otherUserId,
+        isGroup,
+        isGroupOwner: Boolean(chat?.owner_id && uid === chat.owner_id),
       };
     });
 
-    mapped.sort((a, b) => b.lastMsgTimeRaw - a.lastMsgTimeRaw);
-    setChats(mapped);
+    const dedup = Array.from(new Map(mapped.map((c) => [c.id, c])).values());
+    dedup.sort((a, b) => b.lastMsgTimeRaw - a.lastMsgTimeRaw);
+    setChats(dedup);
     setLoading(false);
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    void loadChats();
+
+    const channel = supabase
+      .channel('public:messages:all')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
+        void loadChats();
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
+        void loadChats();
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, () => {
+        void loadChats();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, () => {
+        void loadChats();
+      })
+      // Scoped to this user so new group invites (INSERT) and leaves (DELETE) always trigger a reload.
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'chat_participants',
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => {
+          void loadChats();
+        },
+      )
+      .subscribe();
+
+    const inbox = supabase
+      .channel(`user-chat-inbox:${user.id}`, {
+        config: { broadcast: { self: true } },
+      })
+      .on('broadcast', { event: 'refresh_chats' }, () => {
+        void loadChats();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+      supabase.removeChannel(inbox);
+    };
+  }, [user?.id, loadChats]);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = (e: MouseEvent) => {
+      const el = ctxMenuRef.current;
+      if (el && !el.contains(e.target as Node)) setCtxMenu(null);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [ctxMenu]);
+
+  const confirmLeaveFromList = async () => {
+    if (!leaveTarget) return;
+    const leftId = leaveTarget.id;
+    setLeaveLoading(true);
+    try {
+      const { error } = await supabase.rpc('leave_group', { p_chat_id: leftId });
+      if (error) throw error;
+      setLeaveTarget(null);
+      onClearActiveIfMatch?.(leftId);
+      await loadChats();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not leave the group.';
+      alert(`${msg} Run supabase/group_leave.sql if needed.`);
+    } finally {
+      setLeaveLoading(false);
+    }
   };
 
   return (
@@ -152,6 +228,22 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
               whileHover={{ scale: 1.01 }}
               whileTap={{ scale: 0.99 }}
               onClick={() => onSelectChat(chat.id)}
+              onContextMenu={(e) => {
+                if (!chat.isGroup) return;
+                e.preventDefault();
+                const pad = 12;
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                const menuW = Math.min(240, vw - 24);
+                const menuH = 52;
+                const cx = e.clientX;
+                const cy = e.clientY;
+                let left = cx - menuW / 2;
+                let top = cy + 8;
+                left = Math.max(pad, Math.min(left, vw - menuW - pad));
+                top = Math.max(pad, Math.min(top, vh - menuH - pad));
+                setCtxMenu({ chat, left, top });
+              }}
               className={cn(
                 "relative flex flex-row items-center gap-3 p-3 rounded-xl cursor-pointer transition-colors duration-200 group",
                 activeChat === chat.id 
@@ -161,7 +253,7 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
             >
               <div className="relative shrink-0">
                 <Avatar fallback={chat.name} src={chat.avatar} />
-                {chat.isOnline && (
+                {!chat.isGroup && chat.isOnline && (
                   <span className="absolute bottom-0 right-0 w-3 h-3 border-2 border-background bg-green-500 rounded-full" />
                 )}
               </div>
@@ -184,6 +276,39 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
           ))
         )}
       </div>
+
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          className="fixed z-[60] w-[min(240px,calc(100vw-24px))] rounded-xl border border-border/50 bg-background/95 backdrop-blur-xl shadow-xl py-1 overflow-hidden"
+          style={{ left: ctxMenu.left, top: ctxMenu.top }}
+        >
+          <button
+            type="button"
+            className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left text-foreground hover:bg-secondary/70 transition-colors"
+            onClick={() => {
+              setLeaveTarget({
+                id: ctxMenu.chat.id,
+                name: ctxMenu.chat.name,
+                isOwner: Boolean(ctxMenu.chat.isGroupOwner),
+              });
+              setCtxMenu(null);
+            }}
+          >
+            <LogOut size={16} className="text-muted-foreground shrink-0" />
+            Leave group
+          </button>
+        </div>
+      )}
+
+      <LeaveGroupModal
+        isOpen={Boolean(leaveTarget)}
+        onClose={() => !leaveLoading && setLeaveTarget(null)}
+        groupName={leaveTarget?.name ?? 'Group'}
+        isOwner={leaveTarget?.isOwner ?? false}
+        loading={leaveLoading}
+        onConfirmLeave={confirmLeaveFromList}
+      />
     </div>
   );
 }

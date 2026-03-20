@@ -54,8 +54,13 @@ export function UpdateModal({ update, onClose }: UpdateModalProps) {
   };
 
   return (
-    <Modal isOpen={true} onClose={downloading ? () => {} : onClose} title="Software Update Available!">
-      <div className="space-y-6 pt-4">
+    <Modal
+      isOpen={true}
+      onClose={downloading ? () => {} : onClose}
+      title="Software update"
+      description="A new version of the app is ready."
+    >
+      <div className="space-y-6">
         <div className="p-4 bg-secondary/30 rounded-xl border border-border/50 text-center space-y-2">
           <div className="inline-flex p-3 bg-primary/10 rounded-full text-primary mb-2">
             <DownloadCloud size={32} />

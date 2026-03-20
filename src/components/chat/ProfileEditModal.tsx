@@ -116,7 +116,12 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Edit Profile">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Edit profile"
+      description="Update how you appear to friends and in groups."
+    >
       <form onSubmit={handleSave} className="space-y-6">
         {error && (
           <div className="bg-red-500/10 text-red-500 text-sm p-3 rounded-md border border-red-500/20">
