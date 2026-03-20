@@ -1,59 +1,21 @@
-import { useState } from 'react';
 import { Minus, Square, X, RefreshCw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { check } from '@tauri-apps/plugin-updater';
+import { useUpdate } from '../../contexts/UpdateContext';
 
-export function TitleBar({ onUpdateAvailable }: { onUpdateAvailable: (update: any) => void }) {
-  const [isChecking, setIsChecking] = useState(false);
-  
+export function TitleBar() {
+  const { checkForUpdates, isChecking } = useUpdate();
+
   const handleMinimize = async () => {
-    try {
-      await getCurrentWindow().minimize();
-    } catch (e) {
-      console.error("TitleBar: minimize failed", e);
-    }
+    try { await getCurrentWindow().minimize(); } catch (e) { console.error("minimize failed", e); }
   };
   const handleMaximize = async () => {
     try {
       const win = getCurrentWindow();
-      if (await win.isMaximized()) {
-        await win.unmaximize();
-      } else {
-        await win.maximize();
-      }
-    } catch (e) {
-      console.error("TitleBar: maximize toggle failed", e);
-    }
+      if (await win.isMaximized()) { await win.unmaximize(); } else { await win.maximize(); }
+    } catch (e) { console.error("maximize failed", e); }
   };
   const handleClose = async () => {
-    try {
-      await getCurrentWindow().close();
-    } catch (e) {
-      console.error("TitleBar: close failed", e);
-    }
-  };
-
-  const handleCheckUpdate = async () => {
-    try {
-      setIsChecking(true);
-      const update = await check();
-      if (update?.available) {
-        onUpdateAvailable(update);
-      } else {
-        alert("✅ You are already on the latest version!");
-      }
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
-      // In development mode the updater endpoint doesn't exist — ignore silently
-      if (msg.includes('404') || msg.includes('No such file') || msg.includes('Could not fetch')) {
-        alert("✅ You are on the latest version (updater not available in dev mode).");
-      } else {
-        console.error("Update check error:", e);
-        alert(`Update check failed: ${msg}`);
-      }
-    } finally {
-      setIsChecking(false);
-    }
+    try { await getCurrentWindow().close(); } catch (e) { console.error("close failed", e); }
   };
 
   return (
@@ -67,40 +29,25 @@ export function TitleBar({ onUpdateAvailable }: { onUpdateAvailable: (update: an
 
       <div className="flex items-center gap-2">
         <button 
-          onClick={handleCheckUpdate}
+          onClick={() => checkForUpdates()}
           disabled={isChecking}
-          className="mr-3 flex items-center gap-1.5 px-3 py-1 text-[11px] font-bold text-primary bg-primary/10 hover:bg-primary/20 transition-all rounded-full shadow-sm"
+          className="mr-3 flex items-center gap-1.5 px-3 py-1 text-[11px] font-bold text-primary bg-primary/10 hover:bg-primary/20 transition-all rounded-full shadow-sm titlebar-button"
         >
           <RefreshCw size={12} className={isChecking ? "animate-spin" : ""} />
-          Check for Updates
+          {isChecking ? "Checking..." : "Check for Updates"}
         </button>
 
         <div className="flex h-10 items-center" data-tauri-drag-region="false">
-          <button
-            type="button"
-            aria-label="Minimize"
-            onClick={handleMinimize}
-            data-tauri-drag-region="false"
-            className="inline-flex justify-center items-center w-11 h-full hover:bg-secondary/80 transition-colors cursor-pointer text-muted-foreground hover:text-foreground border-0 bg-transparent p-0"
-          >
+          <button type="button" aria-label="Minimize" onClick={handleMinimize} data-tauri-drag-region="false"
+            className="inline-flex justify-center items-center w-11 h-full hover:bg-secondary/80 transition-colors cursor-pointer text-muted-foreground hover:text-foreground border-0 bg-transparent p-0">
             <Minus size={16} />
           </button>
-          <button
-            type="button"
-            aria-label="Maximize"
-            onClick={handleMaximize}
-            data-tauri-drag-region="false"
-            className="inline-flex justify-center items-center w-11 h-full hover:bg-secondary/80 transition-colors cursor-pointer text-muted-foreground hover:text-foreground border-0 bg-transparent p-0"
-          >
+          <button type="button" aria-label="Maximize" onClick={handleMaximize} data-tauri-drag-region="false"
+            className="inline-flex justify-center items-center w-11 h-full hover:bg-secondary/80 transition-colors cursor-pointer text-muted-foreground hover:text-foreground border-0 bg-transparent p-0">
             <Square size={14} />
           </button>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={handleClose}
-            data-tauri-drag-region="false"
-            className="inline-flex justify-center items-center w-11 h-full hover:bg-red-500 hover:text-white transition-colors cursor-pointer text-muted-foreground border-0 bg-transparent p-0"
-          >
+          <button type="button" aria-label="Close" onClick={handleClose} data-tauri-drag-region="false"
+            className="inline-flex justify-center items-center w-11 h-full hover:bg-red-500 hover:text-white transition-colors cursor-pointer text-muted-foreground border-0 bg-transparent p-0">
             <X size={18} />
           </button>
         </div>

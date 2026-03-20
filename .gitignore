@@ -31,3 +31,4 @@ dist-ssr
 # Tauri Updater Keys
 *.key
 *.key.pub
+PUBLISHING.md
