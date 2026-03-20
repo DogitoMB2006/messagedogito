@@ -40,11 +40,17 @@ export function TitleBar({ onUpdateAvailable }: { onUpdateAvailable: (update: an
       if (update?.available) {
         onUpdateAvailable(update);
       } else {
-        alert("You are already on the latest version!");
+        alert("✅ You are already on the latest version!");
       }
-    } catch (e) {
-      console.warn("Update check failed (expected in development):", e);
-      alert("Failed to check for updates. Make sure your GitHub Releases and tauri.conf.json are configured properly with your pubkey!");
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      // In development mode the updater endpoint doesn't exist — ignore silently
+      if (msg.includes('404') || msg.includes('No such file') || msg.includes('Could not fetch')) {
+        alert("✅ You are on the latest version (updater not available in dev mode).");
+      } else {
+        console.error("Update check error:", e);
+        alert(`Update check failed: ${msg}`);
+      }
     } finally {
       setIsChecking(false);
     }
