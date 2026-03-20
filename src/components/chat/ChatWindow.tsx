@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Clapperboard, Info, Loader2, Paperclip, Phone, Send, Smile, Video, Image as ImageIcon, X } from 'lucide-react';
+import { Clapperboard, CornerUpLeft, Info, Loader2, Paperclip, Phone, Send, Smile, Trash2, Video, Image as ImageIcon, X } from 'lucide-react';
 import { motion } from 'framer-motion';
+import EmojiPicker, { Theme } from 'emoji-picker-react';
+import twemoji from 'twemoji';
 import { Avatar } from '../ui/avatar';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
@@ -26,14 +28,20 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
 
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [replyingToMsg, setReplyingToMsg] = useState<any | null>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
 
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [contextMenuMsg, setContextMenuMsg] = useState<any>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const emojiPickerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const messageNodeMapRef = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isMediaUrl = (value: unknown): value is string => {
     if (typeof value !== 'string' || !value.trim()) return false;
@@ -48,7 +56,73 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
     }
   };
 
+  const escapeHtml = (unsafe: string) =>
+    unsafe
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
+  const toEmojiHtml = (text: string) => {
+    const safe = escapeHtml(text).replace(/\n/g, '<br/>').replace(/ {2}/g, ' &nbsp;');
+    return twemoji.parse(safe, {
+      folder: 'svg',
+      ext: '.svg',
+      base: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/',
+    });
+  };
+
+  const scrollToMessageById = (targetId: string) => {
+    const el = messageNodeMapRef.current.get(String(targetId));
+    if (!el) return;
+
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMessageId(String(targetId));
+
+    if (highlightTimeoutRef.current) clearTimeout(highlightTimeoutRef.current);
+    highlightTimeoutRef.current = setTimeout(() => {
+      setHighlightedMessageId(null);
+      highlightTimeoutRef.current = null;
+    }, 1500);
+  };
+
   const renderMessageContent = (content: string) => {
+    const replyPrefixMatch = content.match(/^↪(?:\[id:([^\]]+)\]\s)?(.+?)\n([\s\S]*)$/);
+    if (replyPrefixMatch) {
+      const [, replyMessageId, replyMeta, body] = replyPrefixMatch;
+      return (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (!replyMessageId) return;
+              scrollToMessageById(replyMessageId);
+            }}
+            className={`border-l-2 border-primary/40 pl-2 text-xs text-muted-foreground text-left ${
+              replyMessageId ? 'hover:text-foreground hover:border-primary/70 transition-colors cursor-pointer' : ''
+            }`}
+            disabled={!replyMessageId}
+            dangerouslySetInnerHTML={{ __html: toEmojiHtml(replyMeta) }}
+          >
+          </button>
+          {isMediaUrl(body) ? (
+            <img
+              src={body}
+              alt="Media message"
+              className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
+              draggable={false}
+            />
+          ) : (
+            <div
+              className="text-sm leading-relaxed whitespace-pre-wrap break-words emoji-render"
+              dangerouslySetInnerHTML={{ __html: toEmojiHtml(body) }}
+            />
+          )}
+        </div>
+      );
+    }
+
     if (isMediaUrl(content)) {
       return (
         <img
@@ -60,7 +134,15 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
       );
     }
 
-    return <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{content}</p>;
+    return <div className="text-sm leading-relaxed whitespace-pre-wrap break-words emoji-render" dangerouslySetInnerHTML={{ __html: toEmojiHtml(content) }} />;
+  };
+
+  const getMessagePreviewLabel = (content: unknown) => {
+    if (typeof content !== 'string') return '[message]';
+    const value = content.trim();
+    if (!value) return '[message]';
+    if (!isMediaUrl(value)) return value;
+    return value.toLowerCase().includes('.gif') ? '[gif]' : '[image]';
   };
 
   const insertMessage = async (content: string) => {
@@ -120,8 +202,14 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
   const startEditingMessage = (msg: any) => {
     const msgId = msg?.id;
     if (!msgId) return;
+    if (typeof msg?.content === 'string' && isMediaUrl(msg.content)) return;
     setEditingMessageId(msgId);
     setEditingValue(typeof msg?.content === 'string' ? msg.content : '');
+  };
+
+  const startReplyMessage = (msg: any) => {
+    setReplyingToMsg(msg);
+    closeContextMenu();
   };
 
   const cancelEditingMessage = () => {
@@ -141,6 +229,25 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
     } catch (e) {
       console.error('Failed to update message', e);
       alert('Failed to save message edit.');
+    }
+  };
+
+  const deleteOwnMessage = async (msg: any) => {
+    if (!user || !msg?.id) return;
+    if (msg.sender_id !== user.id) return;
+
+    const confirmed = window.confirm('Delete this message?');
+    if (!confirmed) return;
+
+    try {
+      await supabase.from('messages').delete().eq('id', msg.id).eq('sender_id', user.id);
+      if (replyingToMsg?.id && String(replyingToMsg.id) === String(msg.id)) {
+        setReplyingToMsg(null);
+      }
+      closeContextMenu();
+    } catch (e) {
+      console.error('Failed to delete message', e);
+      alert('Failed to delete message.');
     }
   };
 
@@ -174,6 +281,37 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
   }, [contextMenuOpen]);
 
   useEffect(() => {
+    if (!emojiOpen) return;
+
+    const onDocMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (emojiPickerWrapperRef.current && !emojiPickerWrapperRef.current.contains(target)) {
+        setEmojiOpen(false);
+      }
+    };
+
+    const onDocKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEmojiOpen(false);
+    };
+
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onDocKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onDocKeyDown);
+    };
+  }, [emojiOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimeoutRef.current) {
+        clearTimeout(highlightTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (chatId && user) {
       setLoading(true);
       loadChat();
@@ -195,6 +333,32 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
             const updated = payload?.new;
             if (!updated?.id) return;
             setMessages((prev) => prev.map((m) => (m?.id && String(m.id) === String(updated.id) ? updated : m)));
+          },
+        )
+        .on(
+          'postgres_changes',
+          { event: 'DELETE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
+          (payload) => {
+            const deleted = payload?.old;
+            if (!deleted?.id) return;
+            setMessages((prev) => prev.filter((m) => !(m?.id && String(m.id) === String(deleted.id))));
+            if (replyingToMsg?.id && String(replyingToMsg.id) === String(deleted.id)) {
+              setReplyingToMsg(null);
+            }
+          },
+        )
+        .on(
+          'postgres_changes',
+          // DELETE payloads may not include chat_id unless REPLICA IDENTITY is FULL,
+          // so listen broadly and remove by id if it exists in the current chat state.
+          { event: 'DELETE', schema: 'public', table: 'messages' },
+          (payload) => {
+            const deleted = payload?.old;
+            if (!deleted?.id) return;
+            setMessages((prev) => prev.filter((m) => !(m?.id && String(m.id) === String(deleted.id))));
+            if (replyingToMsg?.id && String(replyingToMsg.id) === String(deleted.id)) {
+              setReplyingToMsg(null);
+            }
           },
         )
         .subscribe();
@@ -243,14 +407,27 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
     if (imagePreviewUrl) return;
 
     const content = message.trim();
+    let payloadContent = content;
+    if (replyingToMsg) {
+      const replyTarget = replyingToMsg.sender_id === user.id ? 'You' : (otherUser?.display_name || 'User');
+      const replyRaw = getMessagePreviewLabel(replyingToMsg.content);
+      const replySnippet = replyRaw.length > 80 ? `${replyRaw.slice(0, 80)}...` : replyRaw;
+      if (replyingToMsg?.id) {
+        payloadContent = `↪[id:${replyingToMsg.id}] ${replyTarget}: ${replySnippet}\n${content}`;
+      } else {
+        payloadContent = `↪ ${replyTarget}: ${replySnippet}\n${content}`;
+      }
+    }
     setMessage('');
-    await insertMessage(content);
+    setReplyingToMsg(null);
+    await insertMessage(payloadContent);
   };
 
   const disableComposer = editingMessageId !== null || sendingMedia;
   const hasSelectedImage = Boolean(imagePreviewUrl);
 
   const canToggleGif = useMemo(() => !disableComposer, [disableComposer]);
+  const canToggleEmoji = useMemo(() => !disableComposer && !hasSelectedImage, [disableComposer, hasSelectedImage]);
 
   if (loading) {
     return (
@@ -314,8 +491,18 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+              ref={(node) => {
+                if (!msgId) return;
+                messageNodeMapRef.current.set(String(msgId), node);
+              }}
             >
-              <div className={`flex flex-col max-w-[70%] ${isMe ? 'items-end' : 'items-start'} group`}>
+              <div
+                className={`flex flex-col max-w-[70%] ${isMe ? 'items-end' : 'items-start'} group ${
+                  msgId && highlightedMessageId && String(msgId) === highlightedMessageId
+                    ? 'ring-2 ring-primary/70 rounded-2xl shadow-[0_0_0_4px_rgba(59,130,246,0.18)] transition-all'
+                    : ''
+                }`}
+              >
                 <div
                   className={[
                     isMediaMessage && !isEditingThis ? 'p-0 bg-transparent border border-border/40 rounded-2xl overflow-hidden' : 'px-4 py-2.5 rounded-2xl',
@@ -327,11 +514,15 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
                   ].join(' ')}
                   data-chat-message="true"
                   onContextMenu={(e) => {
-                    if (!isMe) return;
-                    if (editingMessageId !== null) return;
-                    if (!msgId) return;
-
                     e.preventDefault();
+                    if (editingMessageId !== null) {
+                      closeContextMenu();
+                      return;
+                    }
+                    if (!msgId) {
+                      closeContextMenu();
+                      return;
+                    }
                     setContextMenuPos({ x: (e as any).clientX ?? 0, y: (e as any).clientY ?? 0 });
                     setContextMenuMsg(msg);
                     setContextMenuOpen(true);
@@ -375,12 +566,45 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
                     {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                   {isMe && !isEditingThis && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => startReplyMessage(msg)}
+                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                        aria-label="Reply to message"
+                      >
+                        <CornerUpLeft size={10} />
+                        Reply
+                      </button>
+                      {!isMediaMessage && (
+                        <button
+                          type="button"
+                          onClick={() => startEditingMessage(msg)}
+                          className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                        >
+                          Edit
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void deleteOwnMessage(msg)}
+                        className="inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300 hover:bg-red-500/15"
+                        aria-label="Delete message"
+                      >
+                        <Trash2 size={10} />
+                        Delete
+                      </button>
+                    </>
+                  )}
+                  {!isMe && !isEditingThis && (
                     <button
                       type="button"
-                      onClick={() => startEditingMessage(msg)}
-                      className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                      onClick={() => startReplyMessage(msg)}
+                      className="inline-flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                      aria-label="Reply to message"
                     >
-                      Edit
+                      <CornerUpLeft size={10} />
+                      Reply
                     </button>
                   )}
                 </div>
@@ -439,6 +663,31 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
           </div>
         )}
 
+        {replyingToMsg && (
+          <div className="mb-3 bg-secondary/20 border border-border/40 rounded-2xl p-3 flex items-start gap-3">
+            <div className="mt-0.5 text-primary">
+              <CornerUpLeft size={16} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-foreground">
+                Replying to {replyingToMsg.sender_id === user?.id ? 'yourself' : (otherUser?.display_name || 'user')}
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                {getMessagePreviewLabel(replyingToMsg.content)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyingToMsg(null)}
+              className="inline-flex items-center justify-center h-8 w-8 rounded-full hover:bg-secondary/60 transition-colors text-muted-foreground hover:text-foreground"
+              aria-label="Cancel reply"
+              disabled={sendingMedia}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center gap-2 bg-secondary/30 border border-border/50 rounded-full p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200">
           <button
             type="button"
@@ -451,42 +700,74 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
           </button>
 
           <div className="relative flex-1">
-            <input
-              type="text"
-              className="w-full bg-transparent border-none focus:outline-none focus:ring-0 text-sm placeholder:text-muted-foreground py-2.5"
-              placeholder="Type your message..."
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void sendTextMessage();
-              }}
-              disabled={hasSelectedImage || sendingMedia || editingMessageId !== null}
-            />
+            <div className="relative">
+              <div
+                className={`w-full text-sm py-2.5 pr-2 min-h-[24px] pointer-events-none emoji-render ${
+                  message ? 'text-foreground' : 'text-muted-foreground'
+                }`}
+                dangerouslySetInnerHTML={{
+                  __html: message ? toEmojiHtml(message) : 'Type your message...',
+                }}
+              />
+              <input
+                type="text"
+                className="absolute inset-0 w-full bg-transparent border-none focus:outline-none focus:ring-0 text-sm text-transparent caret-foreground"
+                placeholder=""
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void sendTextMessage();
+                }}
+                disabled={hasSelectedImage || sendingMedia || editingMessageId !== null}
+              />
+            </div>
           </div>
 
-          <button
-            type="button"
-            className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0 hidden sm:block"
-            aria-label="Emoji (placeholder)"
-            disabled={!user || sendingMedia || editingMessageId !== null}
-            onClick={() => {
-              // Emoji picker can be added later.
-            }}
-          >
-            <Smile size={20} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => canToggleGif && setGifOpen((v) => !v)}
-            className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0 hidden sm:block"
-            aria-label="Send GIF"
-            disabled={!user || sendingMedia || editingMessageId !== null}
-          >
-            <Clapperboard size={20} />
-          </button>
+          <div ref={emojiPickerWrapperRef} className="relative hidden sm:block">
+            <button
+              type="button"
+              className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
+              aria-label="Emoji"
+              disabled={!user || sendingMedia || editingMessageId !== null}
+              onClick={() => {
+                if (!canToggleEmoji) return;
+                setGifOpen(false);
+                setEmojiOpen((v) => !v);
+              }}
+            >
+              <Smile size={20} />
+            </button>
+            {emojiOpen && (
+              <div className="absolute bottom-full right-0 mb-3 z-50">
+                <EmojiPicker
+                  theme={Theme.DARK}
+                  height={360}
+                  width={340}
+                  searchDisabled={false}
+                  skinTonesDisabled={false}
+                  previewConfig={{ showPreview: false }}
+                  onEmojiClick={(emojiData) => {
+                    setMessage((prev) => `${prev}${emojiData.emoji}`);
+                  }}
+                />
+              </div>
+            )}
+          </div>
 
           <div className="relative hidden sm:block">
+            <button
+              type="button"
+              onClick={() => {
+                if (!canToggleGif) return;
+                setEmojiOpen(false);
+                setGifOpen((v) => !v);
+              }}
+              className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
+              aria-label="Send GIF"
+              disabled={!user || sendingMedia || editingMessageId !== null}
+            >
+              <Clapperboard size={20} />
+            </button>
             {gifOpen && (
               <div className="absolute bottom-full right-0 mb-3 w-[420px]">
                 <GifPicker
@@ -529,11 +810,45 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen }: ChatWindo
             className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-secondary/70 transition-colors"
             onClick={() => {
               if (!contextMenuMsg) return;
-              startEditingMessage(contextMenuMsg);
+              startReplyMessage(contextMenuMsg);
+            }}
+          >
+            Reply
+          </button>
+          {contextMenuMsg?.sender_id === user?.id &&
+            !(typeof contextMenuMsg?.content === 'string' && isMediaUrl(contextMenuMsg.content)) && (
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-secondary/70 transition-colors"
+              onClick={() => {
+                if (!contextMenuMsg) return;
+                startEditingMessage(contextMenuMsg);
+                closeContextMenu();
+              }}
+            >
+              Edit
+            </button>
+          )}
+          {contextMenuMsg?.sender_id === user?.id && (
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+              onClick={() => {
+                if (!contextMenuMsg) return;
+                void deleteOwnMessage(contextMenuMsg);
+              }}
+            >
+              Delete
+            </button>
+          )}
+          <button
+            type="button"
+            className="w-full text-left px-3 py-2 text-sm text-muted-foreground hover:bg-secondary/70 transition-colors"
+            onClick={() => {
               closeContextMenu();
             }}
           >
-            Edit
+            Cancel
           </button>
         </div>
       )}

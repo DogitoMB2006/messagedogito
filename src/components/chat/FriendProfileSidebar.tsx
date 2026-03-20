@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { X, Calendar, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { Avatar } from '../ui/avatar';
 import { Button } from '../ui/button';
-import { motion } from 'framer-motion';
 import { supabase } from '../../lib/supabase';
 
 interface FriendProfileSidebarProps {
@@ -28,27 +27,16 @@ export function FriendProfileSidebar({ userId, onClose }: FriendProfileSidebarPr
 
   if (loading) {
     return (
-      <motion.div 
-        initial={{ x: 300, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        exit={{ x: 300, opacity: 0 }}
-        className="flex flex-col h-full bg-background/95 backdrop-blur-md justify-center items-center shadow-[-10px_0_30px_rgba(0,0,0,0.1)] text-primary"
-      >
+      <div className="flex flex-col h-full bg-background/95 backdrop-blur-md justify-center items-center shadow-[-10px_0_30px_rgba(0,0,0,0.1)] text-primary">
         <Loader2 className="animate-spin" size={32} />
-      </motion.div>
+      </div>
     );
   }
 
   if (!profile) return null;
 
   return (
-    <motion.div 
-      initial={{ x: 300, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: 300, opacity: 0 }}
-      transition={{ type: "spring", stiffness: 300, damping: 30 }}
-      className="flex flex-col h-full bg-background/95 backdrop-blur-md overflow-y-auto custom-scrollbar shadow-[-10px_0_30px_rgba(0,0,0,0.1)]"
-    >
+    <div className="flex flex-col h-full bg-background/95 backdrop-blur-md overflow-y-auto custom-scrollbar shadow-[-10px_0_30px_rgba(0,0,0,0.1)]">
       {/* Header */}
       <div className="flex items-center justify-between p-4 bg-background/40 backdrop-blur-md sticky top-0 z-20 border-b border-border/30">
         <h2 className="font-semibold text-foreground tracking-tight">Profile</h2>
@@ -124,6 +112,6 @@ export function FriendProfileSidebar({ userId, onClose }: FriendProfileSidebarPr
           </div>
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }

@@ -4,6 +4,7 @@ import { Input } from '../ui/input';
 import { Avatar } from '../ui/avatar';
 import { cn } from '../../lib/utils';
 import { motion } from 'framer-motion';
+import twemoji from 'twemoji';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
@@ -18,6 +19,22 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
   const [chats, setChats] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const escapeHtml = (unsafe: string) =>
+    unsafe
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
+  const toEmojiHtml = (text: string) => {
+    const safe = escapeHtml(text);
+    return twemoji.parse(safe, {
+      folder: 'svg',
+      ext: '.svg',
+      base: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/',
+    });
+  };
 
   const getMessagePreview = (content: any) => {
     if (typeof content !== 'string' || !content.trim()) return 'Started a chat';
@@ -38,6 +55,9 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
           loadChats(); // Reload to update last messages
         })
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
+          loadChats(); // Reload to update last messages
+        })
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, () => {
           loadChats(); // Reload to update last messages
         })
         .subscribe();
@@ -154,7 +174,10 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
                   </span>
                 </div>
                 <p className={cn("text-xs truncate", chat.unread > 0 ? "text-foreground font-medium" : "text-muted-foreground")}>
-                  {chat.lastMessage}
+                  <span
+                    className="emoji-render"
+                    dangerouslySetInnerHTML={{ __html: toEmojiHtml(String(chat.lastMessage ?? '')) }}
+                  />
                 </p>
               </div>
             </motion.div>

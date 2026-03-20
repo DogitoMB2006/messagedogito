@@ -74,9 +74,17 @@ export function Home() {
         {/* Right Side (inner): Friend Profile Info */}
         <AnimatePresence>
           {showProfile && activeChat && activeFriendId && (
-            <div className="hidden lg:block w-[300px] shrink-0 border-l border-border/50 h-full bg-background z-10 sticky top-0 right-0">
-              <FriendProfileSidebar userId={activeFriendId} onClose={() => setShowProfile(false)} />
-            </div>
+            <>
+              <button
+                type="button"
+                aria-label="Close profile panel overlay"
+                className="hidden md:block absolute inset-y-0 left-0 right-20 bg-black/35 z-20"
+                onClick={() => setShowProfile(false)}
+              />
+              <div className="hidden md:block absolute top-0 right-20 h-full w-[300px] border-l border-border/50 bg-background z-30 shadow-[-12px_0_30px_rgba(0,0,0,0.25)]">
+                <FriendProfileSidebar userId={activeFriendId} onClose={() => setShowProfile(false)} />
+              </div>
+            </>
           )}
         </AnimatePresence>
       </div>
