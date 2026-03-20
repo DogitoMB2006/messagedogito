@@ -15,7 +15,7 @@ export function SideNav() {
   ];
 
   return (
-    <nav className="fixed bottom-0 w-full h-16 border-t border-border/50 bg-background/80 backdrop-blur-xl md:right-0 md:top-0 md:h-full md:w-20 md:border-t-0 md:border-l flex flex-row md:flex-col items-center justify-around md:justify-between px-2 md:py-8 z-50">
+    <nav className="fixed bottom-0 w-full h-16 border-t border-border/50 bg-background/80 backdrop-blur-xl md:right-0 md:top-10 md:h-[calc(100vh-2.5rem)] md:w-20 md:border-t-0 md:border-l flex flex-row md:flex-col items-center justify-around md:justify-between px-2 md:py-8 z-40">
       {/* App Logo / Top Icon (Desktop only) */}
       <div className="hidden md:flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-tr from-primary to-accent shadow-lg shadow-primary/20 text-white mb-8 group cursor-pointer">
         <MessageSquare size={24} className="transition-transform duration-500 group-hover:rotate-12 group-hover:scale-110" />

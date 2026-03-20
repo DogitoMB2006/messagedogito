@@ -24,3 +24,12 @@
     @apply antialiased;
   }
 }
+
+.window-drag-region {
+  -webkit-app-region: drag;
+}
+
+.titlebar-button,
+.window-drag-region button {
+  -webkit-app-region: no-drag;
+}
