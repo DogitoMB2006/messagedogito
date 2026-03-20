@@ -27,3 +27,7 @@ dist-ssr
 .env
 .env.*
 .env.local
+
+# Tauri Updater Keys
+*.key
+*.key.pub

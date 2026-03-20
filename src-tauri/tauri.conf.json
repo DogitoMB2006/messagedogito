@@ -25,9 +25,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "UPDATE_PUB_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5NzRGMUZGMzM2MTgxMjkKUldRcGdXRXovL0YwT1Z1NHd0emhxR0ZhS0VtRE1NVnBVMkRrRXloNU1GNnIyTll4ZkN3Mm5KR0MK",
       "endpoints": [
-        "https://github.com/YOUR_GITHUB_USERNAME/YOUR_GITHUB_REPO/releases/latest/download/latest.json"
+        "https://github.com/DogitoMB2006/messagedogito/releases/latest/download/latest.json"
       ]
     }
   },
