@@ -56,7 +56,7 @@ export function TitleBar({ onUpdateAvailable }: { onUpdateAvailable: (update: an
       className="h-10 bg-background/80 backdrop-blur-xl flex items-center justify-between px-2 select-none border-b border-border/30 sticky top-0 z-50 window-drag-region"
     >
       <div data-tauri-drag-region="true" className="flex items-center gap-2 pl-2">
-         <span data-tauri-drag-region="true" className="font-bold text-sm tracking-tight pointer-events-none text-foreground">AntiGravity Chat</span>
+         <span data-tauri-drag-region="true" className="font-bold text-sm tracking-tight pointer-events-none text-foreground">DogitoChat</span>
       </div>
 
       <div className="flex items-center gap-2">

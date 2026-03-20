@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "AntiGravity Chat",
+        "title": "DogitoChat",
         "width": 1000,
         "height": 700,
         "decorations": false,
