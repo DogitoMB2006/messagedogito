@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, Plus, Loader2 } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Avatar } from '../ui/avatar';

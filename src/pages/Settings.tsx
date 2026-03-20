@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
 import { ProfileEditModal } from '../components/chat/ProfileEditModal';
 import { Button } from '../components/ui/button';

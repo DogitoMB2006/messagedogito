@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
-import { Search, UserPlus, MoreHorizontal, MessageSquare, Loader2 } from 'lucide-react';
+import { Search, UserPlus, MessageSquare, Loader2 } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { Avatar } from '../components/ui/avatar';

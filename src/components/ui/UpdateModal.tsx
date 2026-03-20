@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Modal } from './modal';
 import { Button } from './button';
 import { Loader2, DownloadCloud, CheckCircle } from 'lucide-react';

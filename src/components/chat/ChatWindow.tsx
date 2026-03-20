@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Phone, Video, Info, Paperclip, Smile, Send, Loader2 } from 'lucide-react';
 import { Avatar } from '../ui/avatar';
 import { motion } from 'framer-motion';

@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
-import { Bell, UserPlus, Heart, MessageSquare, Loader2 } from 'lucide-react';
+import { Bell, UserPlus, Loader2 } from 'lucide-react';
 import { Avatar } from '../components/ui/avatar';
 import { motion } from 'framer-motion';
 import { supabase } from '../lib/supabase';
@@ -17,7 +17,7 @@ export function Notifications() {
 
       // Subscribe to new requests
       const channel = supabase.channel('public:friend_requests')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'friend_requests', filter: `receiver_id=eq.${user.id}` }, (payload) => {
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'friend_requests', filter: `receiver_id=eq.${user.id}` }, () => {
           // A new request arrived, reload them to get user details
           loadRequests();
         })
@@ -80,8 +80,8 @@ export function Notifications() {
     setRequests(prev => prev.filter(r => r.id !== id));
   };
 
-  const getIcon = (type: string) => <UserPlus size={14} className="text-white" />;
-  const getIconBg = (type: string) => 'bg-primary';
+  const getIcon = () => <UserPlus size={14} className="text-white" />;
+  const getIconBg = () => 'bg-primary';
 
   return (
     <MainLayout>
@@ -110,8 +110,8 @@ export function Notifications() {
               >
                 <div className="relative mt-1 shrink-0">
                   <Avatar fallback={notif.user} src={notif.avatarUrl} />
-                  <div className={`absolute -bottom-1 -right-1 rounded-full p-1 shadow-sm border-2 border-background ${getIconBg(notif.type)}`}>
-                    {getIcon(notif.type)}
+                  <div className={`absolute -bottom-1 -right-1 rounded-full p-1 shadow-sm border-2 border-background ${getIconBg()}`}>
+                    {getIcon()}
                   </div>
                 </div>
                 <div className="flex-1 min-w-0">
