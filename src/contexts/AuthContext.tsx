@@ -2,6 +2,10 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { isGroupLeaveMessage } from '../lib/groupMessageMarkers';
+import { getActiveChatIdForNotifications } from '../lib/activeChatScope';
+import { invalidateChatList } from '../lib/chatListInvalidate';
+import { getHashPathname } from '../lib/hashRouterLocation';
+import { splitLeadingReply, getNotificationMessageBody, isChatMediaUrl } from '../lib/replyMessageFormat';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 
 export interface UserProfile {
@@ -30,6 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const senderCacheRef = useRef<Map<string, { name: string; avatarUrl: string | null }>>(new Map());
+  const chatMembershipRef = useRef<Set<string>>(new Set());
 
   const fetchProfile = async (userId: string) => {
     const { data, error } = await supabase
@@ -103,10 +108,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Global push notifications listener
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      chatMembershipRef.current = new Set();
+      senderCacheRef.current.clear();
+      return;
+    }
 
     let permissionGranted = false;
-    
+
+    const setChatMembership = (chatIds: string[]) => {
+      chatMembershipRef.current = new Set(chatIds.map(String));
+    };
+
+    const addChatMembership = (chatId: string) => {
+      chatMembershipRef.current.add(String(chatId));
+    };
+
+    const removeChatMembership = (chatId: string) => {
+      chatMembershipRef.current.delete(String(chatId));
+    };
+
+    const refreshChatMemberships = async () => {
+      const { data, error } = await supabase
+        .from('chat_participants')
+        .select('chat_id')
+        .eq('user_id', user.id);
+
+      if (error) {
+        return;
+      }
+
+      setChatMembership((data ?? []).map((row) => String(row.chat_id)));
+    };
+
+    const isRelevantChatForUser = async (chatId: string) => {
+      const normalizedChatId = String(chatId);
+      if (chatMembershipRef.current.has(normalizedChatId)) {
+        return true;
+      }
+
+      const { data, error } = await supabase
+        .from('chat_participants')
+        .select('chat_id')
+        .eq('chat_id', normalizedChatId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (error || !data) {
+        return false;
+      }
+
+      addChatMembership(normalizedChatId);
+      return true;
+    };
+
     const setupNotifications = async () => {
       try {
         // This fails safely if running in a regular web browser
@@ -121,19 +176,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     
     setupNotifications();
+    void refreshChatMemberships();
     
-    const isMediaUrl = (value: unknown): value is string => {
-      if (typeof value !== 'string' || !value.trim()) return false;
-      const v = value.trim();
-      try {
-        const u = new URL(v);
-        const path = u.pathname.toLowerCase();
-        return /\.(gif|png|jpe?g|webp|svg|bmp|ico)$/.test(path);
-      } catch {
-        return /\.(gif|png|jpe?g|webp|svg|bmp|ico)(\?.*)?$/i.test(v);
-      }
-    };
-
     const getMediaKind = (content: string): 'gif' | 'image' | 'text' => {
       const v = content.trim().toLowerCase();
       if (v.includes('.gif')) return 'gif';
@@ -164,28 +208,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return fallback;
     };
 
-    // Listen for incoming messages globally
-    const messagesChannel = supabase.channel('global:messages')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
-        // Don't notify for our own messages
-        if (payload.new.sender_id === user.id) return;
-        
-        // Suppress notifications if the user is currently looking at this exact chat
-        const isAppFocused = document.hasFocus();
-        const isOnChatRoute = window.location.pathname === '/' || window.location.pathname === '/chats';
-        const isReadingThisChat = isOnChatRoute && window.location.search.includes(payload.new.chat_id);
+    // Listen for incoming messages globally (INSERT for notifications; all events refresh chat list)
+    const messagesChannel = supabase
+      .channel('global:messages')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, async (payload) => {
+        const payloadRow = payload.eventType === 'DELETE' ? payload.old : payload.new;
+        const chatId = payloadRow?.chat_id ? String(payloadRow.chat_id) : null;
+        if (!chatId) return;
 
-        // If app is focused and they are inside the specific chat, don't spam desktop notifications
-        if (isAppFocused && isReadingThisChat) {
+        const isRelevantChat = await isRelevantChatForUser(chatId);
+        if (!isRelevantChat) return;
+
+        invalidateChatList();
+
+        if (payload.eventType !== 'INSERT' || !payload.new) return;
+
+        const row = payload.new as { sender_id?: string; chat_id?: string; content?: string };
+        // Don't notify for our own messages
+        if (row.sender_id === user.id) return;
+
+        // Suppress while this thread is open (HashRouter: query lives in hash, not window.location.search)
+        if (getActiveChatIdForNotifications() === String(row.chat_id)) {
           return;
         }
 
         try {
           if (!permissionGranted) return;
 
-          const content = payload.new.content;
-          const senderId = payload.new.sender_id as string;
-          const chatId = payload.new.chat_id as string;
+          const content = row.content;
+          const senderId = row.sender_id as string;
+          const chatId = row.chat_id as string;
           const sender = await getSenderMeta(senderId);
 
           const { data: chatInfo } = await supabase
@@ -213,8 +265,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             return;
           }
 
-          if (isMediaUrl(content)) {
-            const kind = getMediaKind(content);
+          const raw = typeof content === 'string' ? content : '';
+          const split = splitLeadingReply(raw);
+          const mediaProbe = split.isReply ? split.body.trim() : raw.trim();
+
+          if (isChatMediaUrl(mediaProbe)) {
+            const kind = getMediaKind(mediaProbe);
             const mediaBit = kind === 'gif' ? 'a GIF' : 'an image';
             const title = groupName
               ? `${groupName}: ${sender.name} sent ${mediaBit}`
@@ -239,18 +295,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               : `${sender.name} sent you a message`;
             sendNotification({
               title,
-              body: payload.new.content,
+              body: raw ? getNotificationMessageBody(raw) : '',
             });
           }
         } catch (e) {}
       }).subscribe();
+
+    const participantsChannel = supabase
+      .channel(`global:chat-participants:${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'chat_participants', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          const payloadRow = payload.eventType === 'DELETE' ? payload.old : payload.new;
+          const chatId = payloadRow?.chat_id ? String(payloadRow.chat_id) : null;
+          if (!chatId) return;
+
+          if (payload.eventType === 'DELETE') {
+            removeChatMembership(chatId);
+          } else {
+            addChatMembership(chatId);
+          }
+
+          invalidateChatList();
+        },
+      )
+      .subscribe();
       
     // Listen for incoming friend requests globally
     const requestsChannel = supabase.channel('global:requests')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'friend_requests', filter: `receiver_id=eq.${user.id}` }, () => {
          const isAppFocused = document.hasFocus();
-         const isOnNotifRoute = window.location.pathname === '/notifications';
-         
+         const isOnNotifRoute = getHashPathname() === '/notifications';
+
          if (isAppFocused && isOnNotifRoute) return;
 
          try {
@@ -262,8 +339,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
     return () => {
        supabase.removeChannel(messagesChannel);
+       supabase.removeChannel(participantsChannel);
        supabase.removeChannel(requestsChannel);
-    };
+     };
   }, [user]);
 
   return (

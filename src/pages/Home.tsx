@@ -9,6 +9,7 @@ import { MessageSquareDashed } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { setActiveChatIdForNotifications } from '../lib/activeChatScope';
 
 export function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -22,6 +23,11 @@ export function Home() {
   useEffect(() => {
     setActiveChat(searchParams.get('id'));
   }, [searchParams]);
+
+  useEffect(() => {
+    setActiveChatIdForNotifications(activeChat);
+    return () => setActiveChatIdForNotifications(null);
+  }, [activeChat]);
 
   useEffect(() => {
     setPeekUserId(null);

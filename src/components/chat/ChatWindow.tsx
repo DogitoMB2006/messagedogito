@@ -24,6 +24,7 @@ import { GifPicker } from './GifPicker';
 import { GroupManageModal } from './GroupManageModal';
 import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
+import { splitLeadingReply, getQuotedMessageLabel, isChatMediaUrl } from '../../lib/replyMessageFormat';
 
 interface ChatWindowProps {
   chatId: string;
@@ -141,19 +142,6 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     }
   }, []);
 
-  const isMediaUrl = (value: unknown): value is string => {
-    if (typeof value !== 'string' || !value.trim()) return false;
-    const v = value.trim();
-    try {
-      const u = new URL(v);
-      const path = u.pathname.toLowerCase();
-      return /\.(gif|png|jpe?g|webp|svg|bmp|ico)$/.test(path);
-    } catch {
-      // Best-effort fallback for URLs without a valid base.
-      return /\.(gif|png|jpe?g|webp|svg|bmp|ico)(\?.*)?$/i.test(v);
-    }
-  };
-
   const toEmojiHtml = (text: string) =>
     formatChatMessageHtml(text, { multilineBreaks: true, emoji: true });
 
@@ -190,7 +178,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             dangerouslySetInnerHTML={{ __html: toEmojiHtml(replyMeta) }}
           >
           </button>
-          {isMediaUrl(body) ? (
+          {isChatMediaUrl(body) ? (
             <img
               src={body}
               alt="Media message"
@@ -207,7 +195,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       );
     }
 
-    if (isMediaUrl(content)) {
+    if (isChatMediaUrl(content)) {
       return (
         <img
           src={content}
@@ -221,14 +209,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     return <div className="text-sm leading-relaxed whitespace-pre-wrap break-words emoji-render" dangerouslySetInnerHTML={{ __html: toEmojiHtml(content) }} />;
   };
 
-  const getMessagePreviewLabel = (content: unknown) => {
-    if (typeof content !== 'string') return '[message]';
-    const value = content.trim();
-    if (!value) return '[message]';
-    if (isGroupLeaveMessage(value)) return 'Left the group';
-    if (!isMediaUrl(value)) return value;
-    return value.toLowerCase().includes('.gif') ? '[gif]' : '[image]';
-  };
+  const getMessagePreviewLabel = (content: unknown) => getQuotedMessageLabel(content);
 
   const insertMessage = async (content: string) => {
     if (!content.trim() || !user || removedFromGroup) return;
@@ -313,9 +294,9 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const startEditingMessage = (msg: any) => {
     const msgId = msg?.id;
     if (!msgId) return;
-    if (typeof msg?.content === 'string' && isMediaUrl(msg.content)) return;
+    if (typeof msg?.content === 'string' && isChatMediaUrl(msg.content)) return;
     setEditingMessageId(msgId);
-    setEditingValue(typeof msg?.content === 'string' ? msg.content : '');
+    setEditingValue(typeof msg?.content === 'string' ? splitLeadingReply(msg.content).body : '');
   };
 
   const startReplyMessage = (msg: any) => {
@@ -334,8 +315,13 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     const next = editingValue.trim();
     if (!next) return;
 
+    const row = messages.find((m) => m?.id != null && String(m.id) === String(editingMessageId));
+    const raw = typeof row?.content === 'string' ? row.content : '';
+    const { isReply, prefix } = splitLeadingReply(raw);
+    const contentToStore = isReply ? prefix + next : next;
+
     try {
-      await supabase.from('messages').update({ content: next }).eq('id', editingMessageId);
+      await supabase.from('messages').update({ content: contentToStore }).eq('id', editingMessageId);
       cancelEditingMessage();
     } catch (e) {
       console.error('Failed to update message', e);
@@ -721,8 +707,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           : isGroup
             ? senderNameById[replyingToMsg.sender_id] || 'User'
             : otherUser?.display_name || 'User';
-      const replyRaw = getMessagePreviewLabel(replyingToMsg.content);
-      const replySnippet = replyRaw.length > 80 ? `${replyRaw.slice(0, 80)}...` : replyRaw;
+      const replySnippet = getQuotedMessageLabel(replyingToMsg.content);
       if (replyingToMsg?.id) {
         payloadContent = `↪[id:${replyingToMsg.id}] ${replyTarget}: ${replySnippet}\n${content}`;
       } else {
@@ -837,7 +822,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           const isMe = msg.sender_id === user?.id;
           const msgId = msg?.id;
           const isEditingThis = msgId && editingMessageId && String(msgId) === String(editingMessageId);
-          const isMediaMessage = typeof msg.content === 'string' ? isMediaUrl(msg.content) : false;
+          const isMediaMessage = typeof msg.content === 'string' ? isChatMediaUrl(msg.content) : false;
           const isLeaveSystem = isGroup && typeof msg.content === 'string' && isGroupLeaveMessage(msg.content);
 
           if (isLeaveSystem) {
@@ -1258,7 +1243,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             Reply
           </button>
           {contextMenuMsg?.sender_id === user?.id &&
-            !(typeof contextMenuMsg?.content === 'string' && isMediaUrl(contextMenuMsg.content)) && (
+            !(typeof contextMenuMsg?.content === 'string' && isChatMediaUrl(contextMenuMsg.content)) && (
             <button
               type="button"
               className="w-full text-left px-3 py-2 text-sm text-foreground hover:bg-secondary/70 transition-colors"

@@ -8,8 +8,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
 import { supabase } from '../../lib/supabase';
 import { useNavigate } from 'react-router-dom';
-import { isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { LeaveGroupModal } from './LeaveGroupModal';
+import { CHAT_LIST_INVALIDATE_EVENT } from '../../lib/chatListInvalidate';
+import { getSidebarPreviewText } from '../../lib/replyMessageFormat';
 
 interface ChatListProps {
   activeChat: string | null;
@@ -26,20 +27,10 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
   const [leaveTarget, setLeaveTarget] = useState<{ id: string; name: string; isOwner: boolean } | null>(null);
   const [leaveLoading, setLeaveLoading] = useState(false);
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
+  const chatListInvalidateTimerRef = useRef<number | null>(null);
   const navigate = useNavigate();
   const toEmojiHtml = (text: string) =>
     formatChatMessageHtml(text, { multilineBreaks: false, emoji: true });
-
-  const getMessagePreview = (content: any) => {
-    if (typeof content !== 'string' || !content.trim()) return 'Started a chat';
-    if (isGroupLeaveMessage(content)) return 'Left the group';
-
-    const v = content.trim().toLowerCase();
-    if (v.includes('.gif')) return 'GIF';
-    if (/\.(png|jpe?g|webp|bmp|svg|ico)(\?.*)?$/.test(v)) return 'Photo';
-
-    return content;
-  };
 
   const loadChats = useCallback(async () => {
     const uid = user?.id;
@@ -71,17 +62,28 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       othersByChat.set(row.chat_id, list);
     }
 
-    const { data: messages } = await supabase
-      .from('messages')
-      .select('chat_id, content, created_at')
-      .in('chat_id', chatIds)
-      .order('created_at', { ascending: false });
+    // One latest row per chat (global .in() + .order() is capped by row limits and can hide quiet threads).
+    const lastRows = await Promise.all(
+      chatIds.map((cid) =>
+        supabase
+          .from('messages')
+          .select('content, created_at')
+          .eq('chat_id', cid)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ),
+    );
+    const lastByChat = new Map<string, { content: string; created_at: string }>();
+    chatIds.forEach((cid, i) => {
+      const row = lastRows[i]?.data;
+      if (row) lastByChat.set(cid, row as { content: string; created_at: string });
+    });
 
     const mapped = myParticipants.map((p) => {
       const chat = Array.isArray(p.chats) ? p.chats[0] : p.chats;
       const isGroup = Boolean(chat?.is_group);
-      const chatMessages = messages?.filter((m) => m.chat_id === p.chat_id) || [];
-      const lastMessage = chatMessages.length > 0 ? chatMessages[0] : null;
+      const lastMessage = lastByChat.get(p.chat_id) ?? null;
 
       let name = 'Chat';
       let avatar: string | undefined;
@@ -103,7 +105,7 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
         id: p.chat_id,
         name,
         avatar,
-        lastMessage: lastMessage ? getMessagePreview(lastMessage.content) : 'Started a chat',
+        lastMessage: lastMessage ? getSidebarPreviewText(lastMessage.content) : 'Started a chat',
         time: lastMessage ? new Date(lastMessage.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
         unread: 0,
         isOnline: !isGroup,
@@ -127,15 +129,6 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
 
     const channel = supabase
       .channel('public:messages:all')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
-        void loadChats();
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
-        void loadChats();
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, () => {
-        void loadChats();
-      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, () => {
         void loadChats();
       })
@@ -168,6 +161,26 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       supabase.removeChannel(inbox);
     };
   }, [user?.id, loadChats]);
+
+  useEffect(() => {
+    const schedule = () => {
+      if (chatListInvalidateTimerRef.current != null) {
+        window.clearTimeout(chatListInvalidateTimerRef.current);
+      }
+      chatListInvalidateTimerRef.current = window.setTimeout(() => {
+        chatListInvalidateTimerRef.current = null;
+        void loadChats();
+      }, 80);
+    };
+    window.addEventListener(CHAT_LIST_INVALIDATE_EVENT, schedule);
+    return () => {
+      window.removeEventListener(CHAT_LIST_INVALIDATE_EVENT, schedule);
+      if (chatListInvalidateTimerRef.current != null) {
+        window.clearTimeout(chatListInvalidateTimerRef.current);
+        chatListInvalidateTimerRef.current = null;
+      }
+    };
+  }, [loadChats]);
 
   useEffect(() => {
     if (!ctxMenu) return;
