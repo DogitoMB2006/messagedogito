@@ -19,12 +19,25 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
+  const getMessagePreview = (content: any) => {
+    if (typeof content !== 'string' || !content.trim()) return 'Started a chat';
+
+    const v = content.trim().toLowerCase();
+    if (v.includes('.gif')) return 'GIF';
+    if (/\.(png|jpe?g|webp|bmp|svg|ico)(\?.*)?$/.test(v)) return 'Photo';
+
+    return content;
+  };
+
   useEffect(() => {
     if (user) {
       loadChats();
       // Subscribe to messages changes across all chats I am in
       const channel = supabase.channel('public:messages:all')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
+          loadChats(); // Reload to update last messages
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
           loadChats(); // Reload to update last messages
         })
         .subscribe();
@@ -74,7 +87,7 @@ export function ChatList({ activeChat, onSelectChat }: ChatListProps) {
         id: p.chat_id,
         name: otherUser?.display_name || 'Unknown User',
         avatar: otherUser?.avatar_url,
-        lastMessage: lastMessage?.content || 'Started a chat',
+        lastMessage: lastMessage ? getMessagePreview(lastMessage.content) : 'Started a chat',
         time: lastMessage ? new Date(lastMessage.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
         unread: 0,
         isOnline: true, // Mock online status

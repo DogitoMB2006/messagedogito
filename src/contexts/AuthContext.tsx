@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
@@ -28,6 +28,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SupabaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const senderCacheRef = useRef<Map<string, { name: string; avatarUrl: string | null }>>(new Map());
 
   const fetchProfile = async (userId: string) => {
     const { data, error } = await supabase
@@ -120,6 +121,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     setupNotifications();
     
+    const isMediaUrl = (value: unknown): value is string => {
+      if (typeof value !== 'string' || !value.trim()) return false;
+      const v = value.trim();
+      try {
+        const u = new URL(v);
+        const path = u.pathname.toLowerCase();
+        return /\.(gif|png|jpe?g|webp|svg|bmp|ico)$/.test(path);
+      } catch {
+        return /\.(gif|png|jpe?g|webp|svg|bmp|ico)(\?.*)?$/i.test(v);
+      }
+    };
+
+    const getMediaKind = (content: string): 'gif' | 'image' | 'text' => {
+      const v = content.trim().toLowerCase();
+      if (v.includes('.gif')) return 'gif';
+      if (/\.(png|jpe?g|webp|svg|bmp|ico)(\?.*)?$/.test(v)) return 'image';
+      return 'text';
+    };
+
+    const getSenderMeta = async (senderId: string) => {
+      const cached = senderCacheRef.current.get(senderId);
+      if (cached) return cached;
+
+      const { data, error } = await supabase
+        .from('users')
+        .select('display_name, username, avatar_url')
+        .eq('id', senderId)
+        .maybeSingle();
+
+      if (!error && data) {
+        const name = data.display_name || data.username || 'Someone';
+        const avatarUrl = data.avatar_url ?? null;
+        const meta = { name, avatarUrl };
+        senderCacheRef.current.set(senderId, meta);
+        return meta;
+      }
+
+      const fallback = { name: 'Someone', avatarUrl: null };
+      senderCacheRef.current.set(senderId, fallback);
+      return fallback;
+    };
+
     // Listen for incoming messages globally
     const messagesChannel = supabase.channel('global:messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
@@ -137,8 +180,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
-          if (permissionGranted) {
-            sendNotification({ title: 'New Message ✨', body: payload.new.content });
+          if (!permissionGranted) return;
+
+          const content = payload.new.content;
+          const senderId = payload.new.sender_id as string;
+          const sender = await getSenderMeta(senderId);
+
+          if (isMediaUrl(content)) {
+            const kind = getMediaKind(content);
+            const title = kind === 'gif' ? `${sender.name} sent you a GIF` : `${sender.name} sent you an image`;
+            sendNotification({
+              title,
+              body: 'Open chat to view.',
+              attachments: sender.avatarUrl
+                ? [
+                    {
+                      id: 'sender-avatar',
+                      url: sender.avatarUrl,
+                    },
+                  ]
+                : undefined,
+            });
+          } else {
+            // Plain text message
+            sendNotification({
+              title: `${sender.name} sent you a message`,
+              body: payload.new.content,
+            });
           }
         } catch (e) {}
       }).subscribe();
