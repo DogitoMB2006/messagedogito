@@ -31,7 +31,9 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
         run: |
           $keyPath = Join-Path $env:RUNNER_TEMP 'tauri.key'
-          Set-Content -Path $keyPath -Value $env:TAURI_PRIVATE_KEY -NoNewline
+          $key = $env:TAURI_PRIVATE_KEY.Trim()
+          $encoding = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText($keyPath, $key, $encoding)
           "TAURI_PRIVATE_KEY_PATH=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: build and release
