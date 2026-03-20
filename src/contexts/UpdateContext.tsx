@@ -22,8 +22,11 @@ interface UpdateContextType {
 
 const UpdateContext = createContext<UpdateContextType | undefined>(undefined);
 
-// Check every 30 minutes
-const CHECK_INTERVAL_MS = 30 * 60 * 1000;
+// Check frequently so newly published releases appear quickly.
+const CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const STARTUP_CHECK_DELAY_MS = 5000;
+const STARTUP_FOLLOW_UP_DELAY_MS = 45000;
+const FOREGROUND_RECHECK_COOLDOWN_MS = 45 * 1000;
 const DISMISSED_UPDATE_VERSION_KEY = 'dogito.dismissedUpdateVersion';
 
 function readDismissedUpdateVersion() {
@@ -56,6 +59,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const dismissedVersionRef = useRef<string | null>(readDismissedUpdateVersion());
   const autoPromptedVersionRef = useRef<string | null>(null);
   const notifiedVersionRef = useRef<string | null>(null);
+  const lastSilentCheckAtRef = useRef(0);
+  const isSilentCheckRunningRef = useRef(false);
 
   const clearStatusTimeout = useCallback(() => {
     if (statusTimeoutRef.current) {
@@ -202,19 +207,69 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
   }, [dismissUpdateStatus, notifyAboutUpdate, revealUpdateWindow, setDismissedVersion, showUpdateStatus]);
 
+  const runSilentUpdateCheck = useCallback(async (force = false) => {
+    const now = Date.now();
+
+    if (isSilentCheckRunningRef.current) {
+      return;
+    }
+
+    if (!force && now - lastSilentCheckAtRef.current < FOREGROUND_RECHECK_COOLDOWN_MS) {
+      return;
+    }
+
+    isSilentCheckRunningRef.current = true;
+    lastSilentCheckAtRef.current = now;
+
+    try {
+      await checkForUpdates(true);
+    } finally {
+      isSilentCheckRunningRef.current = false;
+    }
+  }, [checkForUpdates]);
+
   // Background polling
   useEffect(() => {
-    // First check after 5 seconds of startup
-    const initial = setTimeout(() => checkForUpdates(true), 5000);
+    const initial = setTimeout(() => {
+      void runSilentUpdateCheck(true);
+    }, STARTUP_CHECK_DELAY_MS);
 
-    intervalRef.current = setInterval(() => checkForUpdates(true), CHECK_INTERVAL_MS);
+    const followUp = setTimeout(() => {
+      void runSilentUpdateCheck(true);
+    }, STARTUP_FOLLOW_UP_DELAY_MS);
+
+    intervalRef.current = setInterval(() => {
+      void runSilentUpdateCheck(true);
+    }, CHECK_INTERVAL_MS);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void runSilentUpdateCheck();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      void runSilentUpdateCheck();
+    };
+
+    const handleOnline = () => {
+      void runSilentUpdateCheck(true);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('online', handleOnline);
 
     return () => {
       clearTimeout(initial);
+      clearTimeout(followUp);
       if (intervalRef.current) clearInterval(intervalRef.current);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('online', handleOnline);
       clearStatusTimeout();
     };
-  }, [checkForUpdates, clearStatusTimeout]);
+  }, [clearStatusTimeout, runSilentUpdateCheck]);
 
   const closeUpdateModal = useCallback(() => {
     if (pendingUpdate?.version) {
