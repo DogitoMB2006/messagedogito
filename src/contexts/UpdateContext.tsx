@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 
@@ -23,6 +24,27 @@ const UpdateContext = createContext<UpdateContextType | undefined>(undefined);
 
 // Check every 30 minutes
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const DISMISSED_UPDATE_VERSION_KEY = 'dogito.dismissedUpdateVersion';
+
+function readDismissedUpdateVersion() {
+  try {
+    return localStorage.getItem(DISMISSED_UPDATE_VERSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeDismissedUpdateVersion(version: string | null) {
+  try {
+    if (version) {
+      localStorage.setItem(DISMISSED_UPDATE_VERSION_KEY, version);
+    } else {
+      localStorage.removeItem(DISMISSED_UPDATE_VERSION_KEY);
+    }
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
@@ -31,6 +53,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissedVersionRef = useRef<string | null>(readDismissedUpdateVersion());
+  const autoPromptedVersionRef = useRef<string | null>(null);
+  const notifiedVersionRef = useRef<string | null>(null);
 
   const clearStatusTimeout = useCallback(() => {
     if (statusTimeoutRef.current) {
@@ -68,6 +93,60 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     return 'Update check failed. Please try again in a moment.';
   };
 
+  const setDismissedVersion = useCallback((version: string | null) => {
+    dismissedVersionRef.current = version;
+    writeDismissedUpdateVersion(version);
+  }, []);
+
+  const revealUpdateWindow = useCallback(async () => {
+    const currentWindow = getCurrentWindow();
+
+    try {
+      if (await currentWindow.isMinimized()) {
+        await currentWindow.unminimize();
+      }
+    } catch {
+      // Ignore window state errors.
+    }
+
+    try {
+      if (!(await currentWindow.isVisible())) {
+        await currentWindow.show();
+      }
+    } catch {
+      // Ignore window visibility errors.
+    }
+
+    try {
+      await currentWindow.setFocus();
+    } catch {
+      // Ignore focus errors.
+    }
+  }, []);
+
+  const notifyAboutUpdate = useCallback(async (update: Update) => {
+    if (notifiedVersionRef.current === update.version) {
+      return;
+    }
+
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const permission = await requestPermission();
+      granted = permission === 'granted';
+    }
+
+    if (!granted) {
+      return;
+    }
+
+    await sendNotification({
+      title: 'DogitoChat update available',
+      body: `Version ${update.version} is ready to install.`,
+    });
+
+    notifiedVersionRef.current = update.version;
+  }, []);
+
   const checkForUpdates = useCallback(async (silent = false) => {
     try {
       if (!silent) {
@@ -78,22 +157,37 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       const update = await check({ timeout: 30000 });
 
       if (update?.available) {
-        setPendingUpdate(update);
-        setIsUpdateModalOpen(true);
+        const dismissedVersion = dismissedVersionRef.current;
+        const shouldAutoOpen = !silent || (dismissedVersion !== update.version && autoPromptedVersionRef.current !== update.version);
 
-        // Fire a desktop notification if window is not focused
-        if (!document.hasFocus()) {
-          let granted = await isPermissionGranted();
-          if (!granted) {
-            const permission = await requestPermission();
-            granted = permission === 'granted';
+        if (!silent) {
+          setDismissedVersion(null);
+        }
+
+        if (shouldAutoOpen) {
+          setPendingUpdate(update);
+          setIsUpdateModalOpen(true);
+
+          if (silent) {
+            autoPromptedVersionRef.current = update.version;
           }
-          if (granted) {
-            sendNotification({
-              title: '🔄 DogitoChat Update Available',
-              body: `Version ${update.version} is ready to install. Click to update!`,
-            });
-          }
+        }
+
+        const currentWindow = getCurrentWindow();
+        const [isVisible, isMinimized] = await Promise.all([
+          currentWindow.isVisible().catch(() => true),
+          currentWindow.isMinimized().catch(() => false),
+        ]);
+
+        const shouldRevealWindow = silent && shouldAutoOpen && (!isVisible || isMinimized);
+        const shouldNotify = silent && shouldAutoOpen && (!document.hasFocus() || shouldRevealWindow);
+
+        if (shouldNotify) {
+          await notifyAboutUpdate(update);
+        }
+
+        if (shouldRevealWindow) {
+          await revealUpdateWindow();
         }
       } else if (!silent) {
         showUpdateStatus('info', 'You already have the latest version installed.');
@@ -106,7 +200,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (!silent) setIsChecking(false);
     }
-  }, [dismissUpdateStatus, showUpdateStatus]);
+  }, [dismissUpdateStatus, notifyAboutUpdate, revealUpdateWindow, setDismissedVersion, showUpdateStatus]);
 
   // Background polling
   useEffect(() => {
@@ -122,7 +216,13 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     };
   }, [checkForUpdates, clearStatusTimeout]);
 
-  const closeUpdateModal = () => setIsUpdateModalOpen(false);
+  const closeUpdateModal = useCallback(() => {
+    if (pendingUpdate?.version) {
+      setDismissedVersion(pendingUpdate.version);
+    }
+
+    setIsUpdateModalOpen(false);
+  }, [pendingUpdate, setDismissedVersion]);
 
   return (
     <UpdateContext.Provider value={{

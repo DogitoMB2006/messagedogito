@@ -44,6 +44,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GIPHY_API_KEY: ${{ secrets.VITE_GIPHY_API_KEY }}
         with:
           tagName: v__VERSION__
           releaseName: 'DogitoChat v__VERSION__'
