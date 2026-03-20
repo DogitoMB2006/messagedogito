@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Auth/Login";
@@ -47,7 +47,7 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <HashRouter>
         <Routes>
           {/* Public Auth Routes */}
           <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
@@ -63,7 +63,7 @@ function App() {
           
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </BrowserRouter>
+      </HashRouter>
     </AuthProvider>
   );
 }
