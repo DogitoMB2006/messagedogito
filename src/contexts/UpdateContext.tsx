@@ -1,14 +1,22 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { check, type Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+
+type UpdateStatusTone = 'info' | 'error';
+
+interface UpdateStatus {
+  tone: UpdateStatusTone;
+  message: string;
+}
 
 interface UpdateContextType {
   pendingUpdate: Update | null;
   isUpdateModalOpen: boolean;
   isChecking: boolean;
+  updateStatus: UpdateStatus | null;
   checkForUpdates: () => Promise<void>;
   closeUpdateModal: () => void;
+  dismissUpdateStatus: () => void;
 }
 
 const UpdateContext = createContext<UpdateContextType | undefined>(undefined);
@@ -20,12 +28,55 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const statusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearStatusTimeout = useCallback(() => {
+    if (statusTimeoutRef.current) {
+      clearTimeout(statusTimeoutRef.current);
+      statusTimeoutRef.current = null;
+    }
+  }, []);
+
+  const dismissUpdateStatus = useCallback(() => {
+    clearStatusTimeout();
+    setUpdateStatus(null);
+  }, [clearStatusTimeout]);
+
+  const showUpdateStatus = useCallback((tone: UpdateStatusTone, message: string) => {
+    clearStatusTimeout();
+    setUpdateStatus({ tone, message });
+    statusTimeoutRef.current = setTimeout(() => {
+      setUpdateStatus(null);
+      statusTimeoutRef.current = null;
+    }, 6000);
+  }, [clearStatusTimeout]);
+
+  const getUpdateErrorMessage = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const normalizedMessage = message.toLowerCase();
+
+    if (normalizedMessage.includes('404')) {
+      return 'Update feed is missing from the latest GitHub release.';
+    }
+
+    if (normalizedMessage.includes('network') || normalizedMessage.includes('failed to fetch')) {
+      return 'Could not reach GitHub to check for updates.';
+    }
+
+    return 'Update check failed. Please try again in a moment.';
+  };
 
   const checkForUpdates = useCallback(async (silent = false) => {
     try {
-      if (!silent) setIsChecking(true);
-      const update = await check();
+      if (!silent) {
+        setIsChecking(true);
+        dismissUpdateStatus();
+      }
+
+      const update = await check({ timeout: 30000 });
+
       if (update?.available) {
         setPendingUpdate(update);
         setIsUpdateModalOpen(true);
@@ -44,13 +95,18 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
             });
           }
         }
+      } else if (!silent) {
+        showUpdateStatus('info', 'You already have the latest version installed.');
       }
-    } catch {
-      // Silently ignore in background checks (404 = no update file yet, network error, etc.)
+    } catch (error) {
+      if (!silent) {
+        console.error('Update check failed', error);
+        showUpdateStatus('error', getUpdateErrorMessage(error));
+      }
     } finally {
       if (!silent) setIsChecking(false);
     }
-  }, []);
+  }, [dismissUpdateStatus, showUpdateStatus]);
 
   // Background polling
   useEffect(() => {
@@ -62,8 +118,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     return () => {
       clearTimeout(initial);
       if (intervalRef.current) clearInterval(intervalRef.current);
+      clearStatusTimeout();
     };
-  }, [checkForUpdates]);
+  }, [checkForUpdates, clearStatusTimeout]);
 
   const closeUpdateModal = () => setIsUpdateModalOpen(false);
 
@@ -72,8 +129,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       pendingUpdate,
       isUpdateModalOpen,
       isChecking,
+      updateStatus,
       checkForUpdates: () => checkForUpdates(false),
       closeUpdateModal,
+      dismissUpdateStatus,
     }}>
       {children}
     </UpdateContext.Provider>
@@ -84,19 +143,4 @@ export function useUpdate() {
   const ctx = useContext(UpdateContext);
   if (!ctx) throw new Error('useUpdate must be used within UpdateProvider');
   return ctx;
-}
-
-// Standalone auto-install helper used by UpdateModal
-export async function downloadAndInstall(update: Update, onProgress: (p: number) => void) {
-  let downloaded = 0;
-  let total = 0;
-  await update.downloadAndInstall((event) => {
-    if (event.event === 'Started') {
-      total = event.data.contentLength ?? 0;
-    } else if (event.event === 'Progress') {
-      downloaded += event.data.chunkLength;
-      onProgress(total > 0 ? Math.round((downloaded / total) * 100) : 0);
-    }
-  });
-  await relaunch();
 }

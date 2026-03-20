@@ -1,10 +1,16 @@
 import { useState } from 'react';
+import type { Update } from '@tauri-apps/plugin-updater';
 import { Modal } from './modal';
 import { Button } from './button';
 import { Loader2, DownloadCloud, CheckCircle } from 'lucide-react';
 import { relaunch } from '@tauri-apps/plugin-process';
 
-export function UpdateModal({ update, onClose }: any) {
+interface UpdateModalProps {
+  update: Update;
+  onClose: () => void;
+}
+
+export function UpdateModal({ update, onClose }: UpdateModalProps) {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [installed, setInstalled] = useState(false);
@@ -12,14 +18,16 @@ export function UpdateModal({ update, onClose }: any) {
 
   const startUpdate = async () => {
     setDownloading(true);
+    setError(null);
+    setProgress(0);
     let downloaded = 0;
     let contentLength = 0;
 
     try {
-      await update.downloadAndInstall((event: any) => {
+      await update.downloadAndInstall((event) => {
         switch (event.event) {
           case 'Started':
-            contentLength = event.data.contentLength;
+            contentLength = event.data.contentLength ?? 0;
             break;
           case 'Progress':
             downloaded += event.data.chunkLength;
@@ -28,17 +36,18 @@ export function UpdateModal({ update, onClose }: any) {
             }
             break;
           case 'Finished':
+            setProgress(100);
             break;
         }
       });
       setInstalled(true);
-    } catch(err: any) {
-      console.error(err);
-      setError(err.toString());
+    } catch (err) {
+      console.error('Update install failed', err);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDownloading(false);
     }
-  }
+  };
 
   const handleRestart = async () => {
     await relaunch();
@@ -53,7 +62,7 @@ export function UpdateModal({ update, onClose }: any) {
           </div>
           <h3 className="font-bold text-xl text-foreground">Version {update.version} is now available!</h3>
           <p className="text-sm text-muted-foreground whitespace-pre-wrap text-left bg-background p-3 rounded-lg border border-border/30 mt-4 max-h-40 overflow-y-auto custom-scrollbar">
-            {update.body || "No release notes provided."}
+            {update.body || 'No release notes provided.'}
           </p>
         </div>
 
