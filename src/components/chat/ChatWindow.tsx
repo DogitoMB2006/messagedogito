@@ -43,10 +43,17 @@ import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { GifPicker } from './GifPicker';
 import { GroupManageModal } from './GroupManageModal';
+import { SpoilerChatImage } from './SpoilerChatImage';
 import { TypingDots } from './TypingDots';
 import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
-import { splitLeadingReply, getQuotedMessageLabel, isChatMediaUrl } from '../../lib/replyMessageFormat';
+import {
+  buildChatImageMessageContent,
+  getQuotedMessageLabel,
+  isChatMediaUrl,
+  parseChatMediaPayload,
+  splitLeadingReply,
+} from '../../lib/replyMessageFormat';
 import {
   MESSAGE_ROW_INSERTED_EVENT,
   MESSAGE_ROW_UPDATED_EVENT,
@@ -56,6 +63,7 @@ import { dispatchChatRead, dispatchFriendDmRead, markDmChatRead } from '../../li
 import { useVoiceCall } from '../../contexts/VoiceCallContext';
 import { whenRealtimeSubscribed } from '../../lib/whenRealtimeSubscribed';
 import { httpBroadcastChatMessages } from '../../lib/chatRealtimeBroadcast';
+import { openExternalUrl } from '../../lib/openExternalUrl';
 
 interface ChatWindowProps {
   chatId: string;
@@ -167,6 +175,8 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageMarkSpoiler, setImageMarkSpoiler] = useState(false);
+  const [pendingExternalUrl, setPendingExternalUrl] = useState<string | null>(null);
   const [replyingToMsg, setReplyingToMsg] = useState<any | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [typingPeers, setTypingPeers] = useState<Record<string, ChatTypingRow>>({});
@@ -210,6 +220,8 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   /** After switching chats, snap scroll to bottom once the thread is shown. */
   const snapToBottomAfterOpenRef = useRef(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerMirrorRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const emojiPickerWrapperRef = useRef<HTMLDivElement | null>(null);
   const voiceDeviceAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -326,6 +338,16 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     setShowJumpToLatest(false);
   }, [chatId]);
 
+  const COMPOSER_MAX_HEIGHT_PX = 200;
+
+  useLayoutEffect(() => {
+    const mirror = composerMirrorRef.current;
+    const ta = composerTextareaRef.current;
+    if (!mirror || !ta) return;
+    const h = Math.min(Math.max(mirror.scrollHeight, 40), COMPOSER_MAX_HEIGHT_PX);
+    ta.style.height = `${h}px`;
+  }, [message]);
+
   useEffect(() => {
     const el = messagesScrollRef.current;
     if (!el || loading || removedFromGroup) return;
@@ -362,46 +384,69 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     }, 1500);
   };
 
+  const handleMessagesLinkClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const root = messagesScrollRef.current;
+    if (!root) return;
+    const t = e.target as HTMLElement | null;
+    if (!t || !root.contains(t)) return;
+    const a = t.closest('a.chat-external-link');
+    if (!a || !root.contains(a)) return;
+    const href = a.getAttribute('href');
+    if (!href || !/^https?:\/\//i.test(href)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setPendingExternalUrl(href);
+  }, []);
+
   const renderMessageContent = (content: string) => {
     const replyPrefixMatch = content.match(/^↪(?:\[id:([^\]]+)\]\s)?(.+?)\n([\s\S]*)$/);
     if (replyPrefixMatch) {
       const [, replyMessageId, replyMeta, body] = replyPrefixMatch;
       return (
-        <div className="space-y-2">
+        <div className="space-y-2 min-w-0 max-w-full">
           <button
             type="button"
             onClick={() => {
               if (!replyMessageId) return;
               scrollToMessageById(replyMessageId);
             }}
-            className={`border-l-2 border-primary/40 pl-2 text-xs text-muted-foreground text-left ${
+            className={`min-w-0 max-w-full border-l-2 border-primary/40 pl-2 text-xs text-muted-foreground text-left break-words [overflow-wrap:anywhere] ${
               replyMessageId ? 'hover:text-foreground hover:border-primary/70 transition-colors cursor-pointer' : ''
             }`}
             disabled={!replyMessageId}
             dangerouslySetInnerHTML={{ __html: toEmojiHtml(replyMeta) }}
           >
           </button>
-          {isChatMediaUrl(body) ? (
-            <img
-              src={body}
-              alt="Media message"
-              className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
-              draggable={false}
-            />
-          ) : (
-            <div
-              className="text-sm leading-relaxed whitespace-pre-wrap break-words emoji-render"
-              dangerouslySetInnerHTML={{ __html: toEmojiHtml(body) }}
-            />
-          )}
+          {(() => {
+            const media = parseChatMediaPayload(body);
+            if (!media) {
+              return (
+                <div
+                  className="text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0 max-w-full emoji-render"
+                  dangerouslySetInnerHTML={{ __html: toEmojiHtml(body) }}
+                />
+              );
+            }
+            if (media.spoiler) return <SpoilerChatImage src={media.url} />;
+            return (
+              <img
+                src={media.url}
+                alt="Media message"
+                className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
+                draggable={false}
+              />
+            );
+          })()}
         </div>
       );
     }
 
-    if (isChatMediaUrl(content)) {
+    const topMedia = parseChatMediaPayload(content);
+    if (topMedia) {
+      if (topMedia.spoiler) return <SpoilerChatImage src={topMedia.url} />;
       return (
         <img
-          src={content}
+          src={topMedia.url}
           alt="Media message"
           className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
           draggable={false}
@@ -409,7 +454,12 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       );
     }
 
-    return <div className="text-sm leading-relaxed whitespace-pre-wrap break-words emoji-render" dangerouslySetInnerHTML={{ __html: toEmojiHtml(content) }} />;
+    return (
+      <div
+        className="text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0 max-w-full emoji-render"
+        dangerouslySetInnerHTML={{ __html: toEmojiHtml(content) }}
+      />
+    );
   };
 
   const getMessagePreviewLabel = (content: unknown) => getQuotedMessageLabel(content);
@@ -452,7 +502,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     }
   };
 
-  const uploadAndSendImage = async (file: File) => {
+  const uploadAndSendImage = async (file: File, opts?: { spoiler?: boolean }) => {
     if (!user) return;
     setSendingMedia(true);
     try {
@@ -468,7 +518,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       const { data } = supabase.storage.from('chatimages').getPublicUrl(filePath);
       if (!data?.publicUrl) throw new Error('Failed to resolve public URL for uploaded image.');
 
-      await insertMessage(data.publicUrl);
+      await insertMessage(buildChatImageMessageContent(data.publicUrl, Boolean(opts?.spoiler)));
     } finally {
       setSendingMedia(false);
     }
@@ -478,13 +528,15 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     setImageFile(null);
     setImagePreviewUrl(null);
+    setImageMarkSpoiler(false);
   };
 
   const sendSelectedImage = async () => {
     if (!imageFile) return;
     const file = imageFile;
+    const spoiler = imageMarkSpoiler;
     cancelSelectedImage();
-    await uploadAndSendImage(file);
+    await uploadAndSendImage(file, { spoiler });
   };
 
   const startEditingMessage = (msg: any) => {
@@ -1600,6 +1652,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
         <div
           ref={messagesScrollRef}
           className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col custom-scrollbar"
+          onClickCapture={handleMessagesLinkClick}
         >
         {messages.map((msg, idx) => {
           const isMe = msg.sender_id === user?.id;
@@ -1741,6 +1794,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                       : isMe
                         ? 'bg-primary text-primary-foreground rounded-tr-sm shadow-md shadow-primary/20'
                         : 'bg-secondary/80 border border-border/50 text-foreground rounded-tl-sm backdrop-blur-sm',
+                    !isMediaMessage || isEditingThis ? 'min-w-0 max-w-full overflow-hidden' : '',
                   ].join(' ')}
                   data-chat-message="true"
                   onContextMenu={(e) => {
@@ -1759,15 +1813,19 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                   }}
                 >
                   {isEditingThis ? (
-                    <div className="flex flex-col gap-2">
-                      <input
+                    <div className="flex flex-col gap-2 min-w-0 max-w-full">
+                      <textarea
                         value={editingValue}
                         onChange={(e) => setEditingValue(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') void saveEditingMessage();
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            void saveEditingMessage();
+                          }
                           if (e.key === 'Escape') cancelEditingMessage();
                         }}
-                        className="w-full bg-background/20 border border-border/50 rounded-xl px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        rows={3}
+                        className="w-full min-w-0 max-w-full resize-y bg-background/20 border border-border/50 rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                       />
                       <div className={`flex items-center gap-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
                         <button
@@ -1894,6 +1952,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
             if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
             setImageFile(file);
+            setImageMarkSpoiler(false);
             setImagePreviewUrl(URL.createObjectURL(file));
 
             // Allow selecting the same file again.
@@ -1925,6 +1984,19 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
               </div>
 
               <p className="text-xs text-muted-foreground mt-1">Press Send to upload+send, or remove it to type text.</p>
+
+              <label className="mt-3 flex cursor-pointer items-center gap-2.5 rounded-xl border border-border/40 bg-background/30 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 rounded border-border accent-primary"
+                  checked={imageMarkSpoiler}
+                  onChange={(e) => setImageMarkSpoiler(e.target.checked)}
+                  disabled={sendingMedia}
+                />
+                <span className="text-xs text-foreground leading-snug">
+                  Mark as spoiler — image stays blurred until someone taps to reveal
+                </span>
+              </label>
             </div>
           </div>
         )}
@@ -1968,7 +2040,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           </div>
         ) : null}
 
-        <div className="flex items-center gap-2 bg-secondary/30 border border-border/50 rounded-full p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200">
+        <div className="flex items-end gap-2 bg-secondary/30 border border-border/50 rounded-3xl p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200 min-w-0">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1979,26 +2051,36 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             <Paperclip size={20} />
           </button>
 
-          <div className="relative flex-1">
-            <div className="relative">
+          <div className="relative flex-1 min-w-0 py-1">
+            <div className="relative min-w-0">
               <div
-                className={`w-full text-sm py-2.5 pr-2 min-h-[24px] pointer-events-none emoji-render ${
+                ref={composerMirrorRef}
+                className={`w-full min-w-0 max-w-full text-sm py-2.5 pr-2 pl-0.5 min-h-[40px] max-h-[200px] overflow-y-auto overflow-x-hidden pointer-events-none whitespace-pre-wrap break-words [overflow-wrap:anywhere] emoji-render [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
                   message ? 'text-foreground' : 'text-muted-foreground'
                 }`}
                 dangerouslySetInnerHTML={{
-                  __html: message ? toEmojiHtml(message) : 'Type your message...',
+                  __html: message ? toEmojiHtml(message) : 'Type your message…',
                 }}
               />
-              <input
-                type="text"
-                className="absolute inset-0 w-full bg-transparent border-none focus:outline-none focus:ring-0 text-sm text-transparent caret-foreground"
+              <textarea
+                ref={composerTextareaRef}
+                className="absolute left-0 right-0 top-0 w-full min-w-0 max-h-[200px] resize-none bg-transparent border-none focus:outline-none focus:ring-0 text-sm text-transparent caret-foreground py-2.5 pr-2 pl-0.5 overflow-y-auto overflow-x-hidden custom-scrollbar"
                 placeholder=""
+                rows={1}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
+                onScroll={(e) => {
+                  const m = composerMirrorRef.current;
+                  if (m) m.scrollTop = (e.target as HTMLTextAreaElement).scrollTop;
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') void sendTextMessage();
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendTextMessage();
+                  }
                 }}
                 disabled={hasSelectedImage || sendingMedia || editingMessageId !== null}
+                aria-label="Message"
               />
             </div>
           </div>
@@ -2159,6 +2241,35 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           >
             {deleteMessageBusy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Trash2 className="h-4 w-4" aria-hidden />}
             {deleteMessageBusy ? 'Deleting…' : 'Delete message'}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={pendingExternalUrl != null}
+        onClose={() => setPendingExternalUrl(null)}
+        title="Open external link?"
+        description="You’re about to leave this app and open a website. Only continue if you trust the link."
+        size="sm"
+      >
+        {pendingExternalUrl ? (
+          <p className="text-xs text-muted-foreground break-all rounded-lg border border-border/40 bg-secondary/20 px-3 py-2 mb-4 font-mono">
+            {pendingExternalUrl}
+          </p>
+        ) : null}
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={() => setPendingExternalUrl(null)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              const url = pendingExternalUrl;
+              setPendingExternalUrl(null);
+              if (url) void openExternalUrl(url);
+            }}
+          >
+            Open anyway
           </Button>
         </div>
       </Modal>

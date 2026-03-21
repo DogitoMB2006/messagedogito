@@ -3,7 +3,7 @@ import twemoji from 'twemoji';
 const TWEMOJI_BASE = 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/';
 
 const LINK_CLASS =
-  'text-blue-600 underline underline-offset-2 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300 break-all font-medium';
+  'chat-external-link text-blue-600 underline underline-offset-2 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300 break-all font-medium';
 
 export function escapeHtml(unsafe: string): string {
   return unsafe
