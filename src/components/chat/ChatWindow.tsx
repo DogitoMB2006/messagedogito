@@ -1,9 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ChatTypingRow,
+  emitChatTypingBridge,
+  formatTypingLabel,
+  isTypingRowFresh,
+  TYPING_BROADCAST_PING,
+  TYPING_BROADCAST_STOP,
+  type TypingBroadcastPingPayload,
+  type TypingBroadcastStopPayload,
+  typingBroadcastTopic,
+  typingDisplayNames,
+} from '../../lib/chatTyping';
 import { cn } from '../../lib/utils';
 import { peerPresenceLabel, peerPresenceSubtextClass, resolvePeerPresence } from '../../lib/presenceDisplay';
 import { subscribePeerPresenceBroadcast } from '../../lib/presenceBroadcastBridge';
 import { useNavigate } from 'react-router-dom';
 import {
+  ChevronDown,
   Clapperboard,
   CornerUpLeft,
   Info,
@@ -27,6 +40,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { GifPicker } from './GifPicker';
 import { GroupManageModal } from './GroupManageModal';
+import { TypingDots } from './TypingDots';
 import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
 import { splitLeadingReply, getQuotedMessageLabel, isChatMediaUrl } from '../../lib/replyMessageFormat';
@@ -39,6 +53,16 @@ interface ChatWindowProps {
   isProfileOpen: boolean;
   /** Group chats: open member profile preview (right panel on Home). */
   onPeekUser?: (userId: string) => void;
+}
+
+/** Break clusters after this gap (same sender still starts a new visual group). */
+const MESSAGE_CLUSTER_GAP_MS = 5 * 60 * 1000;
+
+/** Pixels from bottom to still count as "at latest" (hide jump button). */
+const SCROLL_LATEST_THRESHOLD_PX = 120;
+
+function isRenderedLeaveMessage(m: any, isGroup: boolean): boolean {
+  return isGroup && typeof m?.content === 'string' && isGroupLeaveMessage(m.content);
 }
 
 /** Dedupe + chronological order (postgres_changes may miss under RLS; broadcast fills the gap). */
@@ -85,6 +109,10 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [replyingToMsg, setReplyingToMsg] = useState<any | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [typingPeers, setTypingPeers] = useState<Record<string, ChatTypingRow>>({});
+
+  const messageRef = useRef(message);
+  messageRef.current = message;
 
   const dmPeerPresence = useMemo(() => {
     if (isGroup || !otherUser) return null;
@@ -108,6 +136,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [contextMenuMsg, setContextMenuMsg] = useState<any>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
@@ -119,6 +148,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const messageNodeMapRef = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const typingBroadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   /** True after we've successfully loaded this chat as a group (so a missing row = deleted, not a bad DM link). */
   const wasGroupChatRef = useRef(false);
   const isGroupRef = useRef(false);
@@ -188,6 +218,36 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       messagesEndRef.current?.scrollIntoView({ behavior });
     }
   }, []);
+
+  const updateJumpToLatestVisibility = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowJumpToLatest(gap > SCROLL_LATEST_THRESHOLD_PX);
+  }, []);
+
+  useEffect(() => {
+    setShowJumpToLatest(false);
+  }, [chatId]);
+
+  useEffect(() => {
+    const el = messagesScrollRef.current;
+    if (!el || loading || removedFromGroup) return;
+    updateJumpToLatestVisibility();
+    el.addEventListener('scroll', updateJumpToLatestVisibility, { passive: true });
+    const ro = new ResizeObserver(() => updateJumpToLatestVisibility());
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', updateJumpToLatestVisibility);
+      ro.disconnect();
+    };
+  }, [chatId, loading, removedFromGroup, updateJumpToLatestVisibility]);
+
+  useEffect(() => {
+    if (loading || removedFromGroup) return;
+    const id = requestAnimationFrame(() => updateJumpToLatestVisibility());
+    return () => cancelAnimationFrame(id);
+  }, [messages.length, loading, removedFromGroup, updateJumpToLatestVisibility]);
 
   const toEmojiHtml = (text: string) =>
     formatChatMessageHtml(text, { multilineBreaks: true, emoji: true });
@@ -699,7 +759,21 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   useEffect(() => {
     if (chatId && user?.id) {
+      let cancelled = false;
+      setTypingPeers({});
       void loadChat();
+
+      void (async () => {
+        const { data } = await supabase.from('chat_typing').select('*').eq('chat_id', chatId);
+        if (cancelled || !data?.length) return;
+        const next: Record<string, ChatTypingRow> = {};
+        for (const row of data as ChatTypingRow[]) {
+          if (String(row.user_id) === String(user.id)) continue;
+          if (!isTypingRowFresh(row)) continue;
+          next[String(row.user_id)] = row;
+        }
+        setTypingPeers(next);
+      })();
 
       const channel = supabase
         .channel(`public:messages:${chatId}`, {
@@ -832,21 +906,158 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             };
           });
         })
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'chat_typing', filter: `chat_id=eq.${chatId}` },
+          (payload) => {
+            const row = payload.new as ChatTypingRow | null;
+            if (!row?.user_id || String(row.user_id) === String(user.id)) return;
+            setTypingPeers((prev) => ({ ...prev, [String(row.user_id)]: row }));
+          },
+        )
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'chat_typing', filter: `chat_id=eq.${chatId}` },
+          (payload) => {
+            const row = payload.new as ChatTypingRow | null;
+            if (!row?.user_id || String(row.user_id) === String(user.id)) return;
+            setTypingPeers((prev) => ({ ...prev, [String(row.user_id)]: row }));
+          },
+        )
+        .on(
+          'postgres_changes',
+          { event: 'DELETE', schema: 'public', table: 'chat_typing', filter: `chat_id=eq.${chatId}` },
+          (payload) => {
+            const row = payload.old as { user_id?: string } | null;
+            if (!row?.user_id) return;
+            const uid = String(row.user_id);
+            setTypingPeers((prev) => {
+              if (!prev[uid]) return prev;
+              const next = { ...prev };
+              delete next[uid];
+              return next;
+            });
+          },
+        )
         .subscribe();
 
       realtimeChannelRef.current = channel;
 
+      const typingBroadcastChannel = supabase
+        .channel(typingBroadcastTopic(chatId), {
+          config: { broadcast: { self: true } },
+        })
+        .on('broadcast', { event: TYPING_BROADCAST_PING }, ({ payload }) => {
+          const p = payload as Partial<TypingBroadcastPingPayload> | null;
+          if (!p?.user_id || String(p.chat_id) !== String(chatId)) return;
+          if (String(p.user_id) === String(user.id)) return;
+          const row: ChatTypingRow = {
+            chat_id: String(chatId),
+            user_id: String(p.user_id),
+            display_name: typeof p.display_name === 'string' && p.display_name.trim() ? p.display_name : 'Someone',
+            updated_at:
+              typeof p.updated_at === 'string' && p.updated_at ? p.updated_at : new Date().toISOString(),
+          };
+          setTypingPeers((prev) => ({ ...prev, [row.user_id]: row }));
+          emitChatTypingBridge({ kind: 'ping', chatId: String(chatId), row });
+        })
+        .on('broadcast', { event: TYPING_BROADCAST_STOP }, ({ payload }) => {
+          const p = payload as Partial<TypingBroadcastStopPayload> | null;
+          if (!p?.user_id || String(p.chat_id) !== String(chatId)) return;
+          if (String(p.user_id) === String(user.id)) return;
+          const uid = String(p.user_id);
+          setTypingPeers((prev) => {
+            if (!prev[uid]) return prev;
+            const next = { ...prev };
+            delete next[uid];
+            return next;
+          });
+          emitChatTypingBridge({ kind: 'stop', chatId: String(chatId), userId: uid });
+        })
+        .subscribe();
+
+      typingBroadcastRef.current = typingBroadcastChannel;
+
       return () => {
+        cancelled = true;
         realtimeChannelRef.current = null;
+        typingBroadcastRef.current = null;
         supabase.removeChannel(channel);
+        supabase.removeChannel(typingBroadcastChannel);
+        void supabase.from('chat_typing').delete().eq('chat_id', chatId).eq('user_id', user.id);
       };
     }
     return undefined;
   }, [chatId, user?.id, loadChat, scrollToBottom]);
 
+  const deleteMyTyping = useCallback(async () => {
+    if (!user?.id || !chatId) return;
+    await supabase.from('chat_typing').delete().eq('chat_id', chatId).eq('user_id', user.id);
+    try {
+      await typingBroadcastRef.current?.send({
+        type: 'broadcast',
+        event: TYPING_BROADCAST_STOP,
+        payload: { chat_id: chatId, user_id: user.id } satisfies TypingBroadcastStopPayload,
+      });
+    } catch (e) {
+      console.warn('typing_stop broadcast failed', e);
+    }
+  }, [chatId, user?.id]);
+
+  const pulseMyTyping = useCallback(async () => {
+    if (!user?.id || !chatId || removedFromGroup) return;
+    const display_name =
+      (typeof profile?.display_name === 'string' && profile.display_name.trim()) ||
+      (typeof profile?.username === 'string' && profile.username.trim()) ||
+      'Someone';
+    const updated_at = new Date().toISOString();
+    await supabase.from('chat_typing').upsert(
+      {
+        chat_id: chatId,
+        user_id: user.id,
+        display_name,
+        updated_at,
+      },
+      { onConflict: 'chat_id,user_id' },
+    );
+    try {
+      await typingBroadcastRef.current?.send({
+        type: 'broadcast',
+        event: TYPING_BROADCAST_PING,
+        payload: {
+          chat_id: chatId,
+          user_id: user.id,
+          display_name,
+          updated_at,
+        } satisfies TypingBroadcastPingPayload,
+      });
+    } catch (e) {
+      console.warn('typing_ping broadcast failed', e);
+    }
+  }, [chatId, user?.id, profile, removedFromGroup]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setTypingPeers((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          if (!isTypingRowFresh(next[k]!)) {
+            delete next[k];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
   const sendTextMessage = async () => {
     if (!message.trim() || !user || editingMessageId !== null) return;
     if (imagePreviewUrl) return;
+
+    void deleteMyTyping();
 
     const content = message.trim();
     let payloadContent = content;
@@ -871,6 +1082,51 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   const disableComposer = editingMessageId !== null || sendingMedia || removedFromGroup;
   const hasSelectedImage = Boolean(imagePreviewUrl);
+  const hasComposerText = message.trim().length > 0;
+
+  useEffect(() => {
+    if (!hasComposerText) {
+      void deleteMyTyping();
+    }
+  }, [hasComposerText, deleteMyTyping]);
+
+  useEffect(() => {
+    if (!chatId || !user?.id || removedFromGroup || disableComposer || !hasComposerText) {
+      return;
+    }
+    const tick = () => {
+      if (!messageRef.current.trim()) return;
+      void pulseMyTyping();
+    };
+    tick();
+    const iv = window.setInterval(tick, 2300);
+    return () => {
+      window.clearInterval(iv);
+      void deleteMyTyping();
+    };
+  }, [
+    chatId,
+    user?.id,
+    removedFromGroup,
+    disableComposer,
+    hasComposerText,
+    pulseMyTyping,
+    deleteMyTyping,
+  ]);
+
+  const typingBannerLabel = useMemo(() => {
+    const rows = Object.values(typingPeers);
+    const names = typingDisplayNames(rows, user?.id);
+    return formatTypingLabel(names);
+  }, [typingPeers, user?.id]);
+
+  const typingBannerRow =
+    typingBannerLabel != null && typingBannerLabel !== '' ? (
+      <p className="text-xs text-muted-foreground flex flex-wrap items-baseline gap-x-1 min-w-0">
+        <span className="truncate">{typingBannerLabel}</span>
+        <TypingDots className="inline-block w-[1.2rem] tabular-nums shrink-0" />
+      </p>
+    ) : null;
 
   const canToggleGif = useMemo(() => !disableComposer, [disableComposer]);
   const canToggleEmoji = useMemo(() => !disableComposer && !hasSelectedImage, [disableComposer, hasSelectedImage]);
@@ -885,7 +1141,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   return (
     <div
-      className="flex flex-col h-full bg-gradient-to-br from-background to-secondary/5 relative"
+      className="flex flex-col h-full min-h-0 bg-gradient-to-br from-background to-secondary/5 relative"
       onContextMenu={(e) => {
         // Hide the native context menu for right-clicks outside our message bubbles.
         const target = e.target as HTMLElement | null;
@@ -929,24 +1185,27 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             <h2 className="font-semibold text-foreground group-hover:text-primary transition-colors">
               {isGroup ? chatRow?.name || 'Group' : otherUser?.display_name || 'Loading...'}
             </h2>
-            <p
-              className={cn(
-                'text-xs font-medium tracking-wide',
-                isGroup
-                  ? 'text-muted-foreground'
-                  : dmPeerPresence
-                    ? peerPresenceSubtextClass(dmPeerPresence)
-                    : 'text-muted-foreground',
-              )}
-            >
-              {isGroup
-                ? `${Object.keys(senderNameById).length} members`
-                : otherUser
-                  ? dmPeerPresence
-                    ? peerPresenceLabel(dmPeerPresence)
-                    : 'Offline'
-                  : '…'}
-            </p>
+            {isGroup ? (
+              <div className="space-y-0.5 min-w-0 max-w-[min(100%,220px)] sm:max-w-[min(100%,320px)]">
+                {typingBannerRow ? (
+                  <div className="text-primary/90 [&_p]:text-primary/90" aria-hidden>
+                    {typingBannerRow}
+                  </div>
+                ) : null}
+                <p className="text-xs font-medium tracking-wide text-muted-foreground">
+                  {Object.keys(senderNameById).length} members
+                </p>
+              </div>
+            ) : (
+              <p
+                className={cn(
+                  'text-xs font-medium tracking-wide',
+                  dmPeerPresence ? peerPresenceSubtextClass(dmPeerPresence) : 'text-muted-foreground',
+                )}
+              >
+                {otherUser ? (dmPeerPresence ? peerPresenceLabel(dmPeerPresence) : 'Offline') : '…'}
+              </p>
+            )}
           </div>
         </div>
 
@@ -982,13 +1241,34 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       </div>
 
       {/* Messages Area */}
-      <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        <div
+          ref={messagesScrollRef}
+          className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col custom-scrollbar"
+        >
         {messages.map((msg, idx) => {
           const isMe = msg.sender_id === user?.id;
           const msgId = msg?.id;
           const isEditingThis = msgId && editingMessageId && String(msgId) === String(editingMessageId);
           const isMediaMessage = typeof msg.content === 'string' ? isChatMediaUrl(msg.content) : false;
           const isLeaveSystem = isGroup && typeof msg.content === 'string' && isGroupLeaveMessage(msg.content);
+
+          const immPrev = idx > 0 ? messages[idx - 1] : null;
+          const immPrevIsLeave = immPrev ? isRenderedLeaveMessage(immPrev, isGroup) : false;
+          const timeGapBreak =
+            !!immPrev &&
+            !immPrevIsLeave &&
+            new Date(msg.created_at).getTime() - new Date(immPrev.created_at).getTime() >
+              MESSAGE_CLUSTER_GAP_MS;
+          const sameSenderRun =
+            !!immPrev &&
+            !immPrevIsLeave &&
+            !timeGapBreak &&
+            String(immPrev.sender_id) === String(msg.sender_id);
+          const runStart = !sameSenderRun;
+          const clusterGapClass =
+            idx === 0 ? '' : sameSenderRun ? 'mt-1' : immPrevIsLeave ? 'mt-3' : 'mt-5';
+          const leaveGapClass = idx === 0 ? '' : immPrevIsLeave ? 'mt-2' : 'mt-4';
 
           if (isLeaveSystem) {
             const who =
@@ -1000,7 +1280,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                 key={msgId || idx}
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="flex justify-center w-full py-1"
+                className={`flex justify-center w-full py-1 ${leaveGapClass}`}
                 ref={(node) => {
                   if (!msgId) return;
                   messageNodeMapRef.current.set(String(msgId), node);
@@ -1026,42 +1306,39 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
               key={msgId || idx}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+              className={`flex ${isMe ? 'justify-end' : 'justify-start'} ${clusterGapClass}`}
               ref={(node) => {
                 if (!msgId) return;
                 messageNodeMapRef.current.set(String(msgId), node);
               }}
             >
               <div
-                className={`flex flex-col max-w-[70%] ${isMe ? 'items-end' : 'items-start'} group ${
+                className={`flex max-w-[min(70%,28rem)] gap-2 min-w-0 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'} ${
                   msgId && highlightedMessageId && String(msgId) === highlightedMessageId
                     ? 'ring-2 ring-primary/70 rounded-2xl shadow-[0_0_0_4px_rgba(59,130,246,0.18)] transition-all'
                     : ''
-                }`}
+                } group`}
               >
                 {isGroup && (
                   <div
-                    className={`flex items-center gap-2 mb-1.5 w-full ${isMe ? 'flex-row-reverse' : 'flex-row'}`}
+                    className={`w-8 shrink-0 flex flex-col ${isMe ? 'items-end' : 'items-start'} ${sameSenderRun ? 'justify-end pb-1' : 'justify-end'}`}
                   >
-                    {!isMe && onPeekUser ? (
-                      <button
-                        type="button"
-                        onClick={() => onPeekUser(msg.sender_id)}
-                        className="flex items-center gap-2 min-w-0 rounded-lg -m-1 p-1 hover:bg-secondary/60 transition-colors text-left outline-none focus-visible:ring-2 focus-visible:ring-primary flex-row"
-                        aria-label={`View profile: ${senderNameById[msg.sender_id] || 'User'}`}
-                      >
-                        <Avatar
-                          size="sm"
-                          fallback={senderNameById[msg.sender_id] || 'U'}
-                          src={senderAvatarById[msg.sender_id]}
-                          className="ring-1 ring-border/30 shadow-sm shrink-0"
-                        />
-                        <span className="text-[10px] font-medium text-muted-foreground truncate max-w-[200px]">
-                          {senderNameById[msg.sender_id] || 'User'}
-                        </span>
-                      </button>
-                    ) : (
-                      <>
+                    {runStart ? (
+                      !isMe && onPeekUser ? (
+                        <button
+                          type="button"
+                          onClick={() => onPeekUser(msg.sender_id)}
+                          className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary shrink-0"
+                          aria-label={`View profile: ${senderNameById[msg.sender_id] || 'User'}`}
+                        >
+                          <Avatar
+                            size="sm"
+                            fallback={senderNameById[msg.sender_id] || 'U'}
+                            src={senderAvatarById[msg.sender_id]}
+                            className="ring-1 ring-border/30 shadow-sm"
+                          />
+                        </button>
+                      ) : (
                         <Avatar
                           size="sm"
                           fallback={
@@ -1070,15 +1347,37 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                               : senderNameById[msg.sender_id] || 'U'
                           }
                           src={isMe ? profile?.avatar_url ?? undefined : senderAvatarById[msg.sender_id]}
-                          className="ring-1 ring-border/30 shadow-sm"
+                          className="ring-1 ring-border/30 shadow-sm shrink-0"
                         />
-                        <span className="text-[10px] font-medium text-muted-foreground truncate max-w-[200px]">
-                          {isMe ? 'You' : senderNameById[msg.sender_id] || 'User'}
-                        </span>
-                      </>
+                      )
+                    ) : (
+                      <span className="block w-8 h-8 shrink-0" aria-hidden />
                     )}
                   </div>
                 )}
+                <div
+                  className={`flex flex-col min-w-0 flex-1 ${isMe ? 'items-end' : 'items-start'}`}
+                >
+                  {isGroup && runStart && (
+                    <div
+                      className={`flex items-center gap-2 mb-1.5 w-full min-w-0 ${isMe ? 'justify-end' : 'justify-start'}`}
+                    >
+                      {!isMe && onPeekUser ? (
+                        <button
+                          type="button"
+                          onClick={() => onPeekUser(msg.sender_id)}
+                          className="text-[10px] font-medium text-muted-foreground truncate max-w-full rounded-md px-1 py-0.5 -mx-1 hover:bg-secondary/60 transition-colors text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          aria-label={`View profile: ${senderNameById[msg.sender_id] || 'User'}`}
+                        >
+                          {senderNameById[msg.sender_id] || 'User'}
+                        </button>
+                      ) : (
+                        <span className="text-[10px] font-medium text-muted-foreground truncate max-w-[200px]">
+                          {isMe ? 'You' : senderNameById[msg.sender_id] || 'User'}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 <div
                   className={[
                     isMediaMessage && !isEditingThis ? 'p-0 bg-transparent border border-border/40 rounded-2xl overflow-hidden' : 'px-4 py-2.5 rounded-2xl',
@@ -1137,7 +1436,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                   ) : null}
                 </div>
 
-                <div className="flex items-center gap-2 mt-1 px-1">
+                <div className={`flex items-center gap-2 px-1 ${sameSenderRun ? 'mt-0.5' : 'mt-1'}`}>
                   <span className="text-[10px] text-muted-foreground">
                     {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
@@ -1195,11 +1494,36 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
                     </button>
                   )}
                 </div>
+                </div>
               </div>
             </motion.div>
           );
         })}
         <div ref={messagesEndRef} />
+        </div>
+
+        {showJumpToLatest ? (
+          <motion.button
+            type="button"
+            aria-label="Jump to latest message"
+            title="Latest messages"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+            className={cn(
+              'absolute bottom-4 right-4 z-20 flex h-10 w-10 items-center justify-center rounded-full',
+              'border border-border/60 bg-background/95 text-foreground shadow-lg backdrop-blur-md',
+              'ring-1 ring-black/5 dark:ring-white/10',
+              'hover:border-primary/45 hover:bg-primary/12 hover:text-primary transition-colors',
+            )}
+            onClick={() => {
+              scrollToBottom('smooth');
+              window.setTimeout(() => updateJumpToLatestVisibility(), 450);
+            }}
+          >
+            <ChevronDown className="h-5 w-5" strokeWidth={2.25} />
+          </motion.button>
+        ) : null}
       </div>
 
       {/* Input Area */}
@@ -1279,6 +1603,15 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             </button>
           </div>
         )}
+
+        {typingBannerRow ? (
+          <div
+            className="mb-2 min-h-[1.25rem] flex items-center text-foreground/85 [&_p]:text-foreground/85"
+            aria-live="polite"
+          >
+            {typingBannerRow}
+          </div>
+        ) : null}
 
         <div className="flex items-center gap-2 bg-secondary/30 border border-border/50 rounded-full p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200">
           <button

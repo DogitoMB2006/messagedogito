@@ -1,15 +1,34 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
 import { ProfileEditModal } from '../components/chat/ProfileEditModal';
 import { Button } from '../components/ui/button';
-import { User, Bell, Shield, Moon, Monitor, Palette } from 'lucide-react';
+import { User, Bell, Shield, Moon, Monitor, Palette, Power } from 'lucide-react';
 import { Avatar } from '../components/ui/avatar';
 import { motion } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
+import { cn } from '../lib/utils';
+import {
+  getAutostartPreference,
+  readAutostartEnabledFromOs,
+  setAutostartEnabled,
+} from '../lib/autostart';
 
 export function Settings() {
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [autostart, setAutostart] = useState(() => getAutostartPreference());
+  const [autostartBusy, setAutostartBusy] = useState(false);
   const { profile, signOut } = useAuth();
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const os = await readAutostartEnabledFromOs();
+      if (!cancelled && os !== null) setAutostart(os);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -64,9 +83,47 @@ export function Settings() {
                   <p className="text-sm text-muted-foreground mt-0.5">Customize your app appearance</p>
                 </div>
                 <div className="flex items-center gap-1 p-1 bg-background border border-border/50 rounded-lg shadow-inner">
-                  <button className="flex items-center gap-2 px-3 py-1.5 bg-secondary text-foreground shadow-sm rounded-md text-sm font-medium transition-colors"><Moon size={14} /> Dark</button>
-                  <button className="flex items-center gap-2 px-3 py-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 rounded-md text-sm font-medium transition-colors"><Monitor size={14} /> System</button>
+                  <button type="button" className="flex items-center gap-2 px-3 py-1.5 bg-secondary text-foreground shadow-sm rounded-md text-sm font-medium transition-colors"><Moon size={14} /> Dark</button>
+                  <button type="button" className="flex items-center gap-2 px-3 py-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 rounded-md text-sm font-medium transition-colors"><Monitor size={14} /> System</button>
                 </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
+                <div>
+                  <h4 className="font-medium text-foreground flex items-center gap-2">
+                    <Power size={16} className="text-muted-foreground" /> Open when system starts
+                  </h4>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Launch DogitoChat when you log in to your computer. Desktop app only; ignored in the browser.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={autostart}
+                  disabled={autostartBusy}
+                  onClick={async () => {
+                    const next = !autostart;
+                    setAutostartBusy(true);
+                    try {
+                      await setAutostartEnabled(next);
+                      setAutostart(next);
+                    } finally {
+                      setAutostartBusy(false);
+                    }
+                  }}
+                  className={cn(
+                    'w-11 h-6 rounded-full relative transition-colors shadow-inner shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50',
+                    autostart ? 'bg-primary' : 'bg-muted-foreground/30',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'absolute top-1 w-4 h-4 bg-white rounded-full transition-all shadow-sm',
+                      autostart ? 'right-1' : 'left-1',
+                    )}
+                  />
+                </button>
               </div>
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">

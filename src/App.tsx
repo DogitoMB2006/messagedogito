@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { applyAutostartPreferenceOnLaunch } from "./lib/autostart";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { UpdateProvider } from "./contexts/UpdateContext";
 import { PresenceProvider } from "./contexts/PresenceContext";
@@ -47,6 +49,10 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  useEffect(() => {
+    void applyAutostartPreferenceOnLaunch();
+  }, []);
+
   return (
     <AuthProvider>
       <UpdateProvider>

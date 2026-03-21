@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, Plus, Loader2, LogOut } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Avatar } from '../ui/avatar';
@@ -20,6 +20,15 @@ import {
   fetchUnreadCountByChatId,
   formatFriendUnreadBadge,
 } from '../../lib/friendDmUnread';
+import {
+  type ChatTypingRow,
+  CHAT_TYPING_BRIDGE_EVENT,
+  type ChatTypingBridgeDetail,
+  formatTypingLabel,
+  isTypingRowFresh,
+  typingDisplayNames,
+} from '../../lib/chatTyping';
+import { TypingDots } from './TypingDots';
 
 interface ChatListProps {
   activeChat: string | null;
@@ -33,6 +42,7 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
   const activeChatRef = useRef<string | null>(activeChat);
   activeChatRef.current = activeChat;
   const [chats, setChats] = useState<any[]>([]);
+  const [typingByChat, setTypingByChat] = useState<Record<string, Record<string, ChatTypingRow>>>({});
   const [loading, setLoading] = useState(true);
   const [ctxMenu, setCtxMenu] = useState<{ chat: any; left: number; top: number } | null>(null);
   const [leaveTarget, setLeaveTarget] = useState<{ id: string; name: string; isOwner: boolean } | null>(null);
@@ -42,6 +52,28 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
   const navigate = useNavigate();
   const toEmojiHtml = (text: string) =>
     formatChatMessageHtml(text, { multilineBreaks: false, emoji: true });
+
+  const chatIdsKey = useMemo(() => chats.map((c) => c.id).sort().join(','), [chats]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setTypingByChat((prev) => {
+        let changed = false;
+        const out: Record<string, Record<string, ChatTypingRow>> = {};
+        for (const [cid, peers] of Object.entries(prev)) {
+          const inner: Record<string, ChatTypingRow> = {};
+          for (const [uid, row] of Object.entries(peers)) {
+            if (isTypingRowFresh(row)) inner[uid] = row;
+            else changed = true;
+          }
+          if (Object.keys(inner).length) out[cid] = inner;
+          else if (Object.keys(peers).length) changed = true;
+        }
+        return changed ? out : prev;
+      });
+    }, 1100);
+    return () => window.clearInterval(t);
+  }, []);
 
   const loadChats = useCallback(async () => {
     const uid = user?.id;
@@ -158,6 +190,34 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
   }, []);
 
   useEffect(() => {
+    const onTypingBridge = (e: Event) => {
+      const d = (e as CustomEvent<ChatTypingBridgeDetail>).detail;
+      if (!d) return;
+      if (d.kind === 'ping') {
+        setTypingByChat((prev) => ({
+          ...prev,
+          [d.chatId]: { ...(prev[d.chatId] || {}), [d.row.user_id]: d.row },
+        }));
+        return;
+      }
+      const uid = d.userId;
+      const cid = d.chatId;
+      setTypingByChat((prev) => {
+        const inner = prev[cid];
+        if (!inner?.[uid]) return prev;
+        const nextInner = { ...inner };
+        delete nextInner[uid];
+        const next = { ...prev };
+        if (Object.keys(nextInner).length) next[cid] = nextInner;
+        else delete next[cid];
+        return next;
+      });
+    };
+    window.addEventListener(CHAT_TYPING_BRIDGE_EVENT, onTypingBridge);
+    return () => window.removeEventListener(CHAT_TYPING_BRIDGE_EVENT, onTypingBridge);
+  }, []);
+
+  useEffect(() => {
     const onChatRead = (e: Event) => {
       const d = (e as CustomEvent<{ chatId?: string }>).detail;
       if (!d?.chatId) return;
@@ -258,6 +318,87 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       supabase.removeChannel(inbox);
     };
   }, [user?.id, loadChats]);
+
+  useEffect(() => {
+    if (!user?.id || loading) return;
+    const ids = chatIdsKey ? chatIdsKey.split(',').filter(Boolean) : [];
+    if (ids.length === 0) {
+      setTypingByChat({});
+      return;
+    }
+
+    let cancelled = false;
+    const filter = `chat_id=in.(${ids.join(',')})`;
+
+    void (async () => {
+      const { data } = await supabase.from('chat_typing').select('*').in('chat_id', ids);
+      if (cancelled || !data) return;
+      const next: Record<string, Record<string, ChatTypingRow>> = {};
+      for (const row of data as ChatTypingRow[]) {
+        if (String(row.user_id) === String(user.id)) continue;
+        if (!isTypingRowFresh(row)) continue;
+        const cid = String(row.chat_id);
+        if (!next[cid]) next[cid] = {};
+        next[cid][String(row.user_id)] = row;
+      }
+      setTypingByChat(next);
+    })();
+
+    const channel = supabase
+      .channel(`public:chat_typing:list:${user.id}:${chatIdsKey}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_typing', filter },
+        (payload) => {
+          const row = payload.new as ChatTypingRow | null;
+          if (!row?.chat_id || String(row.user_id) === String(user.id)) return;
+          const cid = String(row.chat_id);
+          setTypingByChat((prev) => ({
+            ...prev,
+            [cid]: { ...(prev[cid] || {}), [String(row.user_id)]: row },
+          }));
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'chat_typing', filter },
+        (payload) => {
+          const row = payload.new as ChatTypingRow | null;
+          if (!row?.chat_id || String(row.user_id) === String(user.id)) return;
+          const cid = String(row.chat_id);
+          setTypingByChat((prev) => ({
+            ...prev,
+            [cid]: { ...(prev[cid] || {}), [String(row.user_id)]: row },
+          }));
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'chat_typing', filter },
+        (payload) => {
+          const row = payload.old as { chat_id?: string; user_id?: string } | null;
+          if (!row?.chat_id || !row.user_id) return;
+          const cid = String(row.chat_id);
+          const uid = String(row.user_id);
+          setTypingByChat((prev) => {
+            const inner = prev[cid];
+            if (!inner?.[uid]) return prev;
+            const nextInner = { ...inner };
+            delete nextInner[uid];
+            const next = { ...prev };
+            if (Object.keys(nextInner).length) next[cid] = nextInner;
+            else delete next[cid];
+            return next;
+          });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, loading, chatIdsKey]);
 
   useEffect(() => {
     const schedule = () => {
@@ -407,10 +548,26 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
                   </span>
                 </div>
                 <p className={cn("text-xs truncate", chat.unread > 0 ? "text-foreground font-medium" : "text-muted-foreground")}>
-                  <span
-                    className="emoji-render"
-                    dangerouslySetInnerHTML={{ __html: toEmojiHtml(String(chat.lastMessage ?? '')) }}
-                  />
+                  {(() => {
+                    const peers = typingByChat[String(chat.id)];
+                    const typingLabel = peers
+                      ? formatTypingLabel(typingDisplayNames(Object.values(peers), user?.id))
+                      : '';
+                    if (typingLabel) {
+                      return (
+                        <span className="inline-flex items-baseline gap-1 max-w-full text-primary/90">
+                          <span className="truncate">{typingLabel}</span>
+                          <TypingDots className="shrink-0 inline-block w-[1.15rem] tabular-nums" />
+                        </span>
+                      );
+                    }
+                    return (
+                      <span
+                        className="emoji-render"
+                        dangerouslySetInnerHTML={{ __html: toEmojiHtml(String(chat.lastMessage ?? '')) }}
+                      />
+                    );
+                  })()}
                 </p>
               </div>
             </motion.div>

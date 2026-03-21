@@ -45,3 +45,4 @@ supabase/friend_dm_unread.sql
 .gitignore
 supabase/users_presence_realtime_rls.sql
 supabase/user_presence.sql
+supabase/chat_typing.sql
