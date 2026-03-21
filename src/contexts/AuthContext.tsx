@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { isGroupLeaveMessage } from '../lib/groupMessageMarkers';
 import { getActiveChatIdForNotifications } from '../lib/activeChatScope';
 import { invalidateChatList } from '../lib/chatListInvalidate';
-import { dispatchMessageRowUpdated } from '../lib/messageRowUpdated';
+import { dispatchMessageRowInserted, dispatchMessageRowUpdated } from '../lib/messageRowUpdated';
 import { getHashPathname } from '../lib/hashRouterLocation';
 import { splitLeadingReply, getNotificationMessageBody, isChatMediaUrl } from '../lib/replyMessageFormat';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
@@ -228,6 +228,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const rec = payload.new as Record<string, unknown>;
           if (rec.id != null && rec.chat_id != null) {
             dispatchMessageRowUpdated(rec);
+          }
+        }
+
+        if (payload.eventType === 'INSERT' && payload.new) {
+          const rec = payload.new as Record<string, unknown>;
+          if (rec.id != null && rec.chat_id != null) {
+            dispatchMessageRowInserted(rec);
           }
         }
 

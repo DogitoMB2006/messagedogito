@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   type ChatTypingRow,
   emitChatTypingBridge,
@@ -21,13 +22,15 @@ import {
   CornerUpLeft,
   Info,
   Loader2,
+  Mic,
+  MicOff,
   Paperclip,
   Phone,
+  PhoneOff,
   Send,
   Settings,
   Smile,
   Trash2,
-  Video,
   Image as ImageIcon,
   X,
 } from 'lucide-react';
@@ -44,8 +47,15 @@ import { TypingDots } from './TypingDots';
 import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
 import { splitLeadingReply, getQuotedMessageLabel, isChatMediaUrl } from '../../lib/replyMessageFormat';
-import { MESSAGE_ROW_UPDATED_EVENT, type MessageRowUpdatedDetail } from '../../lib/messageRowUpdated';
+import {
+  MESSAGE_ROW_INSERTED_EVENT,
+  MESSAGE_ROW_UPDATED_EVENT,
+  type MessageRowUpdatedDetail,
+} from '../../lib/messageRowUpdated';
 import { dispatchChatRead, dispatchFriendDmRead, markDmChatRead } from '../../lib/friendDmUnread';
+import { useVoiceCall } from '../../contexts/VoiceCallContext';
+import { whenRealtimeSubscribed } from '../../lib/whenRealtimeSubscribed';
+import { httpBroadcastChatMessages } from '../../lib/chatRealtimeBroadcast';
 
 interface ChatWindowProps {
   chatId: string;
@@ -65,6 +75,14 @@ function isRenderedLeaveMessage(m: any, isGroup: boolean): boolean {
   return isGroup && typeof m?.content === 'string' && isGroupLeaveMessage(m.content);
 }
 
+function formatElapsed(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 /** Dedupe + chronological order (postgres_changes may miss under RLS; broadcast fills the gap). */
 function mergeMessageList(prev: any[], record: unknown): any[] {
   const r = record as { id?: unknown; created_at?: string } | null;
@@ -76,8 +94,50 @@ function mergeMessageList(prev: any[], record: unknown): any[] {
   );
 }
 
+const SILENT_LOAD_KEEP_ORPHAN_MS = 120_000;
+
+/**
+ * Silent `loadChat` must not replace the whole list: postgres handlers (participants, group_roles, etc.)
+ * can trigger a refetch that returns slightly stale rows and wipes a message we just merged from INSERT/broadcast.
+ */
+function mergeSilentServerMessages(prev: any[], server: any[] | null | undefined): any[] {
+  if (server == null) return prev;
+  if (server.length === 0) return [];
+  const serverIds = new Set(server.map((m) => (m?.id != null ? String(m.id) : '')).filter(Boolean));
+  const now = Date.now();
+  const extra = prev.filter((m) => {
+    if (m?.id == null) return false;
+    const id = String(m.id);
+    if (serverIds.has(id)) return false;
+    const t = new Date((m as any).created_at).getTime();
+    return Number.isFinite(t) && now - t < SILENT_LOAD_KEEP_ORPHAN_MS;
+  });
+  return [...server, ...extra].sort(
+    (a, b) => new Date((a as any).created_at).getTime() - new Date((b as any).created_at).getTime(),
+  );
+}
+
 export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser }: ChatWindowProps) {
   const { user, profile } = useAuth();
+  const {
+    phase: voicePhase,
+    activeChatId: voiceActiveChatId,
+    peerName: voicePeerName,
+    muted: voiceMuted,
+    elapsedSec: voiceElapsedSec,
+    inputDevices,
+    outputDevices,
+    inputDeviceId,
+    outputDeviceId,
+    outputSwitchSupported,
+    callError,
+    startCall,
+    endCall,
+    toggleMute,
+    setInputDevice,
+    setOutputDevice,
+    clearError,
+  } = useVoiceCall();
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
@@ -110,6 +170,9 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const [replyingToMsg, setReplyingToMsg] = useState<any | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [typingPeers, setTypingPeers] = useState<Record<string, ChatTypingRow>>({});
+  const [voiceDeviceMenuOpen, setVoiceDeviceMenuOpen] = useState(false);
+  const [voiceDeviceMenuPos, setVoiceDeviceMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [dmVoiceStartError, setDmVoiceStartError] = useState<string | null>(null);
 
   const messageRef = useRef(message);
   messageRef.current = message;
@@ -118,6 +181,10 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     if (isGroup || !otherUser) return null;
     return resolvePeerPresence(otherUser.presence_status, otherUser.presence_updated_at);
   }, [isGroup, otherUser]);
+
+  useEffect(() => {
+    setDmVoiceStartError(null);
+  }, [chatId]);
 
   useEffect(() => {
     return subscribePeerPresenceBroadcast((p) => {
@@ -145,10 +212,13 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const emojiPickerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const voiceDeviceAnchorRef = useRef<HTMLDivElement | null>(null);
+  const voiceDevicePopoverRef = useRef<HTMLDivElement | null>(null);
   const messageNodeMapRef = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const typingBroadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  /** Bumps each chat realtime effect run so stale async work cannot clear refs after a newer run. */
+  const chatRealtimeSetupGenRef = useRef(0);
   /** True after we've successfully loaded this chat as a group (so a missing row = deleted, not a bad DM link). */
   const wasGroupChatRef = useRef(false);
   const isGroupRef = useRef(false);
@@ -197,6 +267,27 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   /** Same postgres path as sidebar refresh; per-chat Realtime UPDATE can miss peers. */
   useEffect(() => {
+    const onRowInserted = (e: Event) => {
+      const record = (e as CustomEvent<MessageRowUpdatedDetail>).detail?.record;
+      if (!record?.id || String(record.chat_id) !== String(chatId)) return;
+
+      setMessages((prev) => mergeMessageList(prev, record));
+      requestAnimationFrame(() => {
+        const el = messagesScrollRef.current;
+        if (el) {
+          el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        } else {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+
+      if (record.sender_id && user?.id && String(record.sender_id) !== String(user.id)) {
+        void markDmChatRead(supabase, chatId);
+        if (isGroupRef.current) dispatchChatRead(chatId);
+        else dispatchFriendDmRead(String(record.sender_id));
+      }
+    };
+
     const onRowUpdated = (e: Event) => {
       const record = (e as CustomEvent<MessageRowUpdatedDetail>).detail?.record;
       if (!record?.id || String(record.chat_id) !== String(chatId)) return;
@@ -206,9 +297,14 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
         ),
       );
     };
+
+    window.addEventListener(MESSAGE_ROW_INSERTED_EVENT, onRowInserted);
     window.addEventListener(MESSAGE_ROW_UPDATED_EVENT, onRowUpdated);
-    return () => window.removeEventListener(MESSAGE_ROW_UPDATED_EVENT, onRowUpdated);
-  }, [chatId]);
+    return () => {
+      window.removeEventListener(MESSAGE_ROW_INSERTED_EVENT, onRowInserted);
+      window.removeEventListener(MESSAGE_ROW_UPDATED_EVENT, onRowUpdated);
+    };
+  }, [chatId, user?.id]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = messagesScrollRef.current;
@@ -340,17 +436,10 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     setMessages((prev) => mergeMessageList(prev, data));
     requestAnimationFrame(() => scrollToBottom('smooth'));
 
-    const ch = realtimeChannelRef.current;
-    if (ch) {
-      try {
-        await ch.send({
-          type: 'broadcast',
-          event: 'message_inserted',
-          payload: { record: data },
-        });
-      } catch (e) {
-        console.warn('Realtime broadcast send failed', e);
-      }
+    try {
+      await httpBroadcastChatMessages(supabase, chatId, 'message_inserted', { record: data });
+    } catch (e) {
+      console.warn('message_inserted http broadcast failed', e);
     }
   };
 
@@ -448,13 +537,9 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
       }
 
       try {
-        await realtimeChannelRef.current?.send({
-          type: 'broadcast',
-          event: 'message_updated',
-          payload: { record: updatedRow },
-        });
+        await httpBroadcastChatMessages(supabase, chatId, 'message_updated', { record: updatedRow });
       } catch (e) {
-        console.warn('message_updated broadcast failed', e);
+        console.warn('message_updated http broadcast failed', e);
       }
 
       cancelEditingMessage();
@@ -466,6 +551,21 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   const canDeleteOthersMsgs = isGroupOwner || Boolean(myGroupRole?.can_delete_others_messages);
   const canKickMembers = isGroupOwner || Boolean(myGroupRole?.can_kick);
+  const isDmCallForThisChat = !isGroup && voiceActiveChatId != null && String(voiceActiveChatId) === String(chatId);
+  const canStartDmCall = !isGroup && otherUser?.id && voicePhase === 'idle';
+  const dmCallBannerLabel =
+    voicePhase === 'ringing-outgoing'
+      ? `Calling ${voicePeerName || otherUser?.display_name || 'user'}...`
+      : voicePhase === 'ringing-incoming'
+        ? `${voicePeerName || otherUser?.display_name || 'User'} is calling...`
+        : `In call with ${voicePeerName || otherUser?.display_name || 'user'}`;
+
+  const dmVoiceCallButtonTitle = useMemo(() => {
+    if (!otherUser?.id) return 'Loading contact…';
+    if (removedFromGroup) return 'You can’t use calls in this chat';
+    if (voicePhase !== 'idle') return 'Another call is already active';
+    return 'Start voice call';
+  }, [otherUser?.id, removedFromGroup, voicePhase]);
 
   const deleteMessageModalDescription = useMemo(() => {
     const msg = pendingDeleteMsg;
@@ -524,13 +624,12 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     setDeleteMessageBusy(false);
 
     try {
-      await realtimeChannelRef.current?.send({
-        type: 'broadcast',
-        event: 'message_deleted',
-        payload: { id: msg.id, chat_id: chatId },
+      await httpBroadcastChatMessages(supabase, chatId, 'message_deleted', {
+        id: msg.id,
+        chat_id: chatId,
       });
     } catch (e) {
-      console.warn('message_deleted broadcast failed', e);
+      console.warn('message_deleted http broadcast failed', e);
     }
   };
 
@@ -607,6 +706,55 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     };
   }, [emojiOpen]);
 
+  const closeVoiceDeviceMenu = useCallback(() => {
+    setVoiceDeviceMenuOpen(false);
+    setVoiceDeviceMenuPos(null);
+  }, []);
+
+  const updateVoiceDeviceMenuPosition = useCallback(() => {
+    const el = voiceDeviceAnchorRef.current;
+    const w = 288;
+    const r = el?.getBoundingClientRect();
+    const top = r ? r.bottom + 8 : 80;
+    const left = r
+      ? Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8)
+      : Math.max(8, window.innerWidth / 2 - w / 2);
+    setVoiceDeviceMenuPos({ top, left });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!voiceDeviceMenuOpen) return;
+    updateVoiceDeviceMenuPosition();
+    window.addEventListener('scroll', updateVoiceDeviceMenuPosition, true);
+    window.addEventListener('resize', updateVoiceDeviceMenuPosition);
+    return () => {
+      window.removeEventListener('scroll', updateVoiceDeviceMenuPosition, true);
+      window.removeEventListener('resize', updateVoiceDeviceMenuPosition);
+    };
+  }, [voiceDeviceMenuOpen, updateVoiceDeviceMenuPosition]);
+
+  useEffect(() => {
+    if (!voiceDeviceMenuOpen) return;
+
+    const onDocMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inAnchor = voiceDeviceAnchorRef.current?.contains(target);
+      const inPopover = voiceDevicePopoverRef.current?.contains(target);
+      if (!inAnchor && !inPopover) closeVoiceDeviceMenu();
+    };
+    const onDocKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeVoiceDeviceMenu();
+    };
+
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('keydown', onDocKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      document.removeEventListener('keydown', onDocKeyDown);
+    };
+  }, [voiceDeviceMenuOpen, closeVoiceDeviceMenu]);
+
   useEffect(() => {
     return () => {
       if (highlightTimeoutRef.current) {
@@ -616,13 +764,22 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   }, []);
 
   const loadChat = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean; mountGen?: number }) => {
       const silent = opts?.silent ?? false;
+      const mountGen = opts?.mountGen;
+      const stale = () => mountGen != null && mountGen !== chatRealtimeSetupGenRef.current;
+      const abortIfStale = () => {
+        if (!stale()) return false;
+        if (!silent) setLoading(false);
+        return true;
+      };
+
       if (!user) return;
 
       if (!silent) setLoading(true);
 
       const { data: chat } = await supabase.from('chats').select('*').eq('id', chatId).maybeSingle();
+      if (abortIfStale()) return;
 
       if (!chat) {
         setChatRow(null);
@@ -658,6 +815,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           .eq('chat_id', chatId)
           .eq('user_id', uid)
           .maybeSingle();
+        if (abortIfStale()) return;
 
         if (!myMembership) {
           setRemovedFromGroup(true);
@@ -680,6 +838,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           .from('chat_participants')
           .select('user_id, group_role_id, users(*)')
           .eq('chat_id', chatId);
+        if (abortIfStale()) return;
 
         const names: Record<string, string> = {};
         const avatars: Record<string, string | undefined> = {};
@@ -702,6 +861,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             .select('*')
             .eq('id', myMembership.group_role_id)
             .maybeSingle();
+          if (abortIfStale()) return;
           setMyGroupRole(role);
         } else {
           setMyGroupRole(null);
@@ -713,6 +873,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
           .from('chat_participants')
           .select('user_id, group_role_id, users(*)')
           .eq('chat_id', chatId);
+        if (abortIfStale()) return;
 
         const otherRow = allParts?.find((r: any) => r.user_id !== user.id);
         const u = otherRow?.users ? (Array.isArray(otherRow.users) ? otherRow.users[0] : otherRow.users) : null;
@@ -728,9 +889,14 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
         .select('*')
         .eq('chat_id', chatId)
         .order('created_at', { ascending: true });
+      if (abortIfStale()) return;
 
       if (msgs) {
-        setMessages(msgs);
+        if (silent) {
+          setMessages((prev) => mergeSilentServerMessages(prev, msgs));
+        } else {
+          setMessages(msgs);
+        }
       }
       if (!silent) setLoading(false);
     },
@@ -746,22 +912,17 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
   }, [chatId, isGroup, removedFromGroup, loading, otherUser?.id, user?.id]);
 
   const broadcastGroupSyncToPeers = useCallback(() => {
-    try {
-      void realtimeChannelRef.current?.send({
-        type: 'broadcast',
-        event: 'group_sync',
-        payload: { chatId },
-      });
-    } catch (e) {
-      console.warn('group_sync broadcast failed', e);
-    }
+    void httpBroadcastChatMessages(supabase, chatId, 'group_sync', { chatId }).catch((e) =>
+      console.warn('group_sync http broadcast failed', e),
+    );
   }, [chatId]);
 
   useEffect(() => {
     if (chatId && user?.id) {
+      const setupGen = ++chatRealtimeSetupGenRef.current;
       let cancelled = false;
       setTypingPeers({});
-      void loadChat();
+      void loadChat({ mountGen: setupGen });
 
       void (async () => {
         const { data } = await supabase.from('chat_typing').select('*').eq('chat_id', chatId);
@@ -938,10 +1099,7 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
               return next;
             });
           },
-        )
-        .subscribe();
-
-      realtimeChannelRef.current = channel;
+        );
 
       const typingBroadcastChannel = supabase
         .channel(typingBroadcastTopic(chatId), {
@@ -973,14 +1131,31 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
             return next;
           });
           emitChatTypingBridge({ kind: 'stop', chatId: String(chatId), userId: uid });
-        })
-        .subscribe();
+        });
 
-      typingBroadcastRef.current = typingBroadcastChannel;
+      void (async () => {
+        try {
+          await Promise.all([
+            whenRealtimeSubscribed(channel, 60_000, () => cancelled),
+            whenRealtimeSubscribed(typingBroadcastChannel, 30_000, () => cancelled),
+          ]);
+          if (cancelled || setupGen !== chatRealtimeSetupGenRef.current) {
+            void supabase.removeChannel(typingBroadcastChannel);
+            void supabase.removeChannel(channel);
+            return;
+          }
+          typingBroadcastRef.current = typingBroadcastChannel;
+        } catch (e) {
+          void supabase.removeChannel(typingBroadcastChannel);
+          void supabase.removeChannel(channel);
+          if (setupGen !== chatRealtimeSetupGenRef.current) return;
+          if (!cancelled) console.warn('Chat realtime setup failed', e);
+          typingBroadcastRef.current = null;
+        }
+      })();
 
       return () => {
         cancelled = true;
-        realtimeChannelRef.current = null;
         typingBroadcastRef.current = null;
         supabase.removeChannel(channel);
         supabase.removeChannel(typingBroadcastChannel);
@@ -1211,14 +1386,22 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
         <div className="flex items-center gap-1 sm:gap-2 text-muted-foreground">
           {!isGroup && (
-            <>
-              <button className="p-2 rounded-full hover:bg-secondary hover:text-foreground transition-colors hidden sm:block" type="button">
-                <Phone size={20} />
-              </button>
-              <button className="p-2 rounded-full hover:bg-secondary hover:text-foreground transition-colors hidden sm:block" type="button">
-                <Video size={20} />
-              </button>
-            </>
+            <button
+              className="p-2 rounded-full hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              type="button"
+              title={dmVoiceCallButtonTitle}
+              disabled={!canStartDmCall || removedFromGroup}
+              onClick={() => {
+                void (async () => {
+                  if (!otherUser?.id) return;
+                  setDmVoiceStartError(null);
+                  const result = await startCall(chatId, otherUser.id, otherUser?.display_name || 'User');
+                  if (!result.ok) setDmVoiceStartError(result.error);
+                })();
+              }}
+            >
+              <Phone size={20} />
+            </button>
           )}
           {isGroup && (isGroupOwner || canKickMembers) && (
             <button
@@ -1240,8 +1423,180 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
         </div>
       </div>
 
-      {/* Messages Area */}
-      <div className="relative flex-1 min-h-0 flex flex-col">
+      {!isGroup && dmVoiceStartError ? (
+        <div
+          className="px-4 py-2 border-b border-destructive/25 bg-destructive/10 text-sm text-destructive flex items-start justify-between gap-3"
+          role="alert"
+        >
+          <span className="min-w-0 break-words">{dmVoiceStartError}</span>
+          <button
+            type="button"
+            className="shrink-0 text-xs font-medium underline underline-offset-2 hover:opacity-90"
+            onClick={() => setDmVoiceStartError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {isDmCallForThisChat ? (
+        <div className="relative z-30 px-4 py-2 border-b border-border/30 bg-primary/8 backdrop-blur-sm">
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground truncate">{dmCallBannerLabel}</p>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">{formatElapsed(voiceElapsedSec)}</span>
+                {callError ? <span className="text-xs text-red-300 truncate">{callError}</span> : null}
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  toggleMute();
+                  clearError();
+                }}
+                className={`inline-flex items-center justify-center h-9 w-9 rounded-full border transition-colors ${
+                  voiceMuted
+                    ? 'bg-amber-500/15 border-amber-500/35 text-amber-200'
+                    : 'bg-secondary/30 border-border/50 text-foreground hover:bg-secondary/50'
+                }`}
+                title={voiceMuted ? 'Unmute microphone' : 'Mute microphone'}
+              >
+                {voiceMuted ? <MicOff size={16} /> : <Mic size={16} />}
+              </button>
+              <div className="relative" ref={voiceDeviceAnchorRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (voiceDeviceMenuOpen) {
+                      closeVoiceDeviceMenu();
+                    } else {
+                      updateVoiceDeviceMenuPosition();
+                      setVoiceDeviceMenuOpen(true);
+                    }
+                  }}
+                  className="inline-flex items-center justify-center h-9 w-8 rounded-full border border-border/50 bg-secondary/30 text-foreground hover:bg-secondary/50 transition-colors"
+                  title="Audio devices"
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+              {voiceDeviceMenuOpen
+                ? createPortal(
+                    <div
+                      ref={voiceDevicePopoverRef}
+                      role="dialog"
+                      aria-label="Audio devices"
+                      className="fixed z-[200] w-72 rounded-xl border border-border/50 bg-background/98 backdrop-blur-md p-3 shadow-2xl space-y-3 pointer-events-auto"
+                      style={{
+                        top: (voiceDeviceMenuPos ?? { top: 80, left: 24 }).top,
+                        left: (voiceDeviceMenuPos ?? { top: 80, left: 24 }).left,
+                      }}
+                    >
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Input</p>
+                        <div className="max-h-36 overflow-y-auto rounded-lg border border-border/50 bg-secondary/20 p-0.5 space-y-0.5">
+                          <button
+                            type="button"
+                            onClick={() => void setInputDevice('')}
+                            className={cn(
+                              'w-full text-left text-xs rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/60',
+                              !inputDeviceId ? 'bg-primary/15 text-foreground font-medium' : 'text-foreground/90',
+                            )}
+                          >
+                            Default microphone
+                          </button>
+                          {inputDevices.map((d) => {
+                            const id = d.deviceId;
+                            const active = inputDeviceId === id;
+                            return (
+                              <button
+                                key={id || d.label}
+                                type="button"
+                                onClick={() => void setInputDevice(id)}
+                                className={cn(
+                                  'w-full text-left text-xs rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/60 truncate',
+                                  active ? 'bg-primary/15 text-foreground font-medium' : 'text-foreground/90',
+                                )}
+                                title={d.label || 'Microphone'}
+                              >
+                                {d.label || 'Microphone'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Output</p>
+                        <div
+                          className={cn(
+                            'max-h-36 overflow-y-auto rounded-lg border border-border/50 p-0.5 space-y-0.5',
+                            outputSwitchSupported ? 'bg-secondary/20' : 'bg-secondary/10 opacity-60',
+                          )}
+                        >
+                          <button
+                            type="button"
+                            disabled={!outputSwitchSupported}
+                            onClick={() => void setOutputDevice('')}
+                            className={cn(
+                              'w-full text-left text-xs rounded-md px-2 py-1.5 transition-colors',
+                              outputSwitchSupported ? 'hover:bg-secondary/60' : 'cursor-not-allowed',
+                              !outputDeviceId && outputSwitchSupported
+                                ? 'bg-primary/15 text-foreground font-medium'
+                                : 'text-foreground/90',
+                            )}
+                          >
+                            Default output
+                          </button>
+                          {outputDevices.map((d) => {
+                            const id = d.deviceId;
+                            const active = outputDeviceId === id;
+                            return (
+                              <button
+                                key={id || d.label}
+                                type="button"
+                                disabled={!outputSwitchSupported}
+                                onClick={() => void setOutputDevice(id)}
+                                className={cn(
+                                  'w-full text-left text-xs rounded-md px-2 py-1.5 transition-colors truncate',
+                                  outputSwitchSupported ? 'hover:bg-secondary/60' : 'cursor-not-allowed',
+                                  active && outputSwitchSupported
+                                    ? 'bg-primary/15 text-foreground font-medium'
+                                    : 'text-foreground/90',
+                                )}
+                                title={d.label || 'Speaker'}
+                              >
+                                {d.label || 'Speaker'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {!outputSwitchSupported ? (
+                          <p className="text-[10px] text-muted-foreground">
+                            Output switching is not supported by this browser.
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>,
+                    document.body,
+                  )
+                : null}
+              <button
+                type="button"
+                onClick={() => void endCall()}
+                className="inline-flex items-center justify-center h-9 w-9 rounded-full border border-red-500/35 bg-red-500/15 text-red-300 hover:bg-red-500/25 transition-colors"
+                title="Leave call"
+              >
+                <PhoneOff size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Messages Area (z-0 so in-call popovers above paint under sibling overlap) */}
+      <div className="relative z-0 flex-1 min-h-0 flex flex-col">
         <div
           ref={messagesScrollRef}
           className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col custom-scrollbar"
@@ -1827,4 +2182,3 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     </div>
   );
 }
-
