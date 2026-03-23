@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Heart, Loader2, Plus, Sticker, Trash2, X } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import { cn } from '../../lib/utils';
 
 type StickerRow = {
   id: string;
@@ -15,11 +16,12 @@ type Tab = 'mine' | 'favorites';
 type Props = {
   onSelect: (url: string) => void;
   onClose: () => void;
+  className?: string;
 };
 
 const MAX_STICKERS = 5;
 
-export function StickerPicker({ onSelect, onClose }: Props) {
+export function StickerPicker({ onSelect, onClose, className }: Props) {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>('mine');
 
@@ -241,7 +243,12 @@ export function StickerPicker({ onSelect, onClose }: Props) {
   };
 
   return (
-    <div className="bg-background/97 backdrop-blur-xl border border-border/40 rounded-2xl shadow-2xl overflow-hidden w-[min(calc(100vw-1.5rem),320px)]">
+    <div
+      className={cn(
+        'bg-background/97 backdrop-blur-xl border border-border/40 rounded-2xl shadow-2xl overflow-hidden flex flex-col min-h-0 max-h-full w-full max-w-[min(calc(100vw-1.5rem),320px)]',
+        className,
+      )}
+    >
       {/* Header */}
       <div className="px-3 pt-3 pb-2 border-b border-border/30 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -277,7 +284,7 @@ export function StickerPicker({ onSelect, onClose }: Props) {
       </div>
 
       {/* Content */}
-      <div className="p-3 max-h-[260px] overflow-y-auto custom-scrollbar">
+      <div className="p-3 flex-1 min-h-0 max-h-[min(260px,38vh)] sm:max-h-[260px] overflow-y-auto custom-scrollbar">
         {tab === 'mine' && (
           <>
             {uploadError && (

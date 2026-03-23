@@ -48,7 +48,10 @@ import { GifPicker } from './GifPicker';
 import { StickerPicker } from './StickerPicker';
 import { GroupManageModal } from './GroupManageModal';
 import { SpoilerChatImage } from './SpoilerChatImage';
+import { ComposerPickerSheet } from './ComposerPickerSheet';
 import { TypingDots } from './TypingDots';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { useSwipeToReply } from '../../hooks/useSwipeToReply';
 import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessageMarkers';
 import { formatChatMessageHtml } from '../../lib/chatRichText';
 import {
@@ -233,6 +236,8 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const emojiPickerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const gifPickerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const stickerPickerWrapperRef = useRef<HTMLDivElement | null>(null);
   const voiceDeviceAnchorRef = useRef<HTMLDivElement | null>(null);
   const voiceDevicePopoverRef = useRef<HTMLDivElement | null>(null);
   const messageNodeMapRef = useRef<Map<string, HTMLDivElement | null>>(new Map());
@@ -868,19 +873,35 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     };
   }, [contextMenuOpen]);
 
+  const isMobileComposer = useMediaQuery('(max-width: 639px)');
+  const [pickerLayoutTick, setPickerLayoutTick] = useState(0);
   useEffect(() => {
-    if (!emojiOpen) return;
+    const onResize = () => setPickerLayoutTick((n) => n + 1);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!emojiOpen && !gifOpen && !stickerOpen) return;
 
     const onDocMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node | null;
+      const target = e.target as HTMLElement | null;
       if (!target) return;
-      if (emojiPickerWrapperRef.current && !emojiPickerWrapperRef.current.contains(target)) {
-        setEmojiOpen(false);
-      }
+      if (target.closest('[data-composer-picker-portal]')) return;
+      if (emojiPickerWrapperRef.current?.contains(target)) return;
+      if (gifPickerWrapperRef.current?.contains(target)) return;
+      if (stickerPickerWrapperRef.current?.contains(target)) return;
+      setEmojiOpen(false);
+      setGifOpen(false);
+      setStickerOpen(false);
     };
 
     const onDocKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setEmojiOpen(false);
+      if (e.key === 'Escape') {
+        setEmojiOpen(false);
+        setGifOpen(false);
+        setStickerOpen(false);
+      }
     };
 
     document.addEventListener('mousedown', onDocMouseDown);
@@ -889,7 +910,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       document.removeEventListener('mousedown', onDocMouseDown);
       document.removeEventListener('keydown', onDocKeyDown);
     };
-  }, [emojiOpen]);
+  }, [emojiOpen, gifOpen, stickerOpen]);
 
   const closeVoiceDeviceMenu = useCallback(() => {
     setVoiceDeviceMenuOpen(false);
@@ -1490,7 +1511,36 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
   const canToggleGif = useMemo(() => !disableComposer, [disableComposer]);
   const canToggleEmoji = useMemo(() => !disableComposer && !hasSelectedImage, [disableComposer, hasSelectedImage]);
-  const emojiPickerWidth = typeof window === 'undefined' ? 320 : Math.min(window.innerWidth - 24, 340);
+  const emojiPickerWidth = useMemo(() => {
+    if (typeof window === 'undefined') return 320;
+    return Math.min(window.innerWidth - 24, 340);
+  }, [pickerLayoutTick]);
+
+  const mobileEmojiPickerWidth = useMemo(() => {
+    if (typeof window === 'undefined') return 340;
+    return Math.min(400, window.innerWidth - 48);
+  }, [pickerLayoutTick]);
+
+  const mobileEmojiPickerHeight = useMemo(() => {
+    if (typeof window === 'undefined') return 360;
+    return Math.min(420, Math.max(280, Math.floor(window.innerHeight * 0.42)));
+  }, [pickerLayoutTick]);
+
+  const { getMessageSwipeHandlers, getSwipeShiftStyle, getSwipeTrackStyle, isSwipeNearCommit } = useSwipeToReply({
+    enabled: !removedFromGroup && editingMessageId === null,
+    onReply: (msg) => {
+      setReplyingToMsg(msg);
+      closeContextMenu();
+    },
+  });
+
+  const handleEmojiPicked = useCallback(
+    (emoji: string) => {
+      setMessage((prev) => `${prev}${emoji}`);
+      if (isMobileComposer) setEmojiOpen(false);
+    },
+    [isMobileComposer],
+  );
 
   if (loading) {
     return (
@@ -1862,18 +1912,39 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               key={msgId || idx}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className={`flex ${isMe ? 'justify-end' : 'justify-start'} ${clusterGapClass}`}
+              className={`relative w-full flex ${isMe ? 'justify-end' : 'justify-start'} ${clusterGapClass}${isMobileComposer ? ' touch-pan-y' : ''}`}
               ref={(node) => {
                 if (!msgId) return;
                 messageNodeMapRef.current.set(String(msgId), node);
               }}
+              {...getMessageSwipeHandlers(msg)}
             >
               <div
-                className={`flex items-start max-w-[min(86vw,30rem)] md:max-w-[min(70%,28rem)] gap-2.5 min-w-0 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'} ${
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 left-0 z-0 flex w-11 items-center justify-center sm:w-12"
+                style={getSwipeTrackStyle(msg)}
+              >
+                <div
+                  className={cn(
+                    'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-md sm:h-10 sm:w-10',
+                    'border-primary/35 bg-primary/20 shadow-md shadow-black/15',
+                    'dark:border-primary/40 dark:bg-primary/25 dark:shadow-black/40',
+                    isSwipeNearCommit(msg) && 'ring-2 ring-primary/60 shadow-lg shadow-primary/25',
+                  )}
+                  style={{ transition: 'box-shadow 0.18s ease, filter 0.18s ease' }}
+                >
+                  <CornerUpLeft className="text-primary drop-shadow-sm" size={18} strokeWidth={2.35} />
+                </div>
+              </div>
+              <div
+                className={cn(
+                  `relative z-[1] flex min-w-0 items-start max-w-[min(86vw,30rem)] md:max-w-[min(70%,28rem)] gap-2.5 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'}`,
                   msgId && highlightedMessageId && String(msgId) === highlightedMessageId
                     ? 'ring-2 ring-primary/70 rounded-2xl shadow-[0_0_0_4px_rgba(59,130,246,0.18)] transition-all'
-                    : ''
-                } group`}
+                    : '',
+                  'group',
+                )}
+                style={getSwipeShiftStyle(msg)}
               >
                 {isGroup && (
                   <div
@@ -2233,7 +2304,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             </div>
           </div>
 
-          <div ref={emojiPickerWrapperRef} className="relative block">
+          <div ref={emojiPickerWrapperRef} className="relative block shrink-0">
             <button
               type="button"
               className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
@@ -2242,13 +2313,32 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               onClick={() => {
                 if (!canToggleEmoji) return;
                 setGifOpen(false);
+                setStickerOpen(false);
                 setEmojiOpen((v) => !v);
               }}
             >
               <Smile size={18} />
             </button>
-            {emojiOpen && (
-              <div className="absolute bottom-full right-0 mb-3 z-50">
+            <ComposerPickerSheet
+              open={emojiOpen && isMobileComposer}
+              onClose={() => setEmojiOpen(false)}
+            >
+              <div className="flex min-h-0 min-w-0 flex-1 justify-center overflow-auto bg-background">
+                <EmojiPicker
+                  theme={Theme.DARK}
+                  height={mobileEmojiPickerHeight}
+                  width={mobileEmojiPickerWidth}
+                  searchDisabled={false}
+                  skinTonesDisabled={false}
+                  previewConfig={{ showPreview: false }}
+                  onEmojiClick={(emojiData) => {
+                    handleEmojiPicked(emojiData.emoji);
+                  }}
+                />
+              </div>
+            </ComposerPickerSheet>
+            {emojiOpen && !isMobileComposer ? (
+              <div className="pointer-events-auto absolute bottom-full right-0 z-50 mb-3 w-[min(340px,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]">
                 <EmojiPicker
                   theme={Theme.DARK}
                   height={360}
@@ -2257,14 +2347,14 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   skinTonesDisabled={false}
                   previewConfig={{ showPreview: false }}
                   onEmojiClick={(emojiData) => {
-                    setMessage((prev) => `${prev}${emojiData.emoji}`);
+                    handleEmojiPicked(emojiData.emoji);
                   }}
                 />
               </div>
-            )}
+            ) : null}
           </div>
 
-          <div className="relative block">
+          <div ref={gifPickerWrapperRef} className="relative block shrink-0">
             <button
               type="button"
               onClick={() => {
@@ -2279,8 +2369,17 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             >
               <Clapperboard size={18} />
             </button>
-            {gifOpen && (
-              <div className="absolute bottom-full right-0 mb-3 w-[min(calc(100vw-1.5rem),420px)] max-w-[420px]">
+            <ComposerPickerSheet open={gifOpen && isMobileComposer} onClose={() => setGifOpen(false)}>
+              <GifPicker
+                className="h-full max-w-none min-h-0 flex-1 rounded-none border-0 shadow-none"
+                onClose={() => setGifOpen(false)}
+                onSelect={(gifUrl) => {
+                  void sendMediaMessage(gifUrl).finally(() => setGifOpen(false));
+                }}
+              />
+            </ComposerPickerSheet>
+            {gifOpen && !isMobileComposer ? (
+              <div className="pointer-events-auto absolute bottom-full right-0 z-50 mb-3 w-[min(calc(100vw-1.5rem),420px)] max-w-[420px]">
                 <GifPicker
                   onClose={() => setGifOpen(false)}
                   onSelect={(gifUrl) => {
@@ -2288,10 +2387,10 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   }}
                 />
               </div>
-            )}
+            ) : null}
           </div>
 
-          <div className="relative block">
+          <div ref={stickerPickerWrapperRef} className="relative block shrink-0">
             <button
               type="button"
               onClick={() => {
@@ -2305,8 +2404,17 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             >
               <Sticker size={18} />
             </button>
-            {stickerOpen && (
-              <div className="absolute bottom-full right-0 mb-3 z-50">
+            <ComposerPickerSheet open={stickerOpen && isMobileComposer} onClose={() => setStickerOpen(false)}>
+              <StickerPicker
+                className="h-full max-w-none min-h-0 flex-1 rounded-none border-0 shadow-none"
+                onClose={() => setStickerOpen(false)}
+                onSelect={(url) => {
+                  void sendMediaMessage(url).finally(() => setStickerOpen(false));
+                }}
+              />
+            </ComposerPickerSheet>
+            {stickerOpen && !isMobileComposer ? (
+              <div className="pointer-events-auto absolute bottom-full right-0 z-50 mb-3 w-[min(320px,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]">
                 <StickerPicker
                   onClose={() => setStickerOpen(false)}
                   onSelect={(url) => {
@@ -2314,7 +2422,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   }}
                 />
               </div>
-            )}
+            ) : null}
           </div>
 
           <button
