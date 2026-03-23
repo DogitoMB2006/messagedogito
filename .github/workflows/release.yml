@@ -116,12 +116,21 @@ jobs:
           printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON" > src-tauri/gen/android/app/google-services.json
 
       - name: setup Android signing
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
         run: |
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          test -n "$ANDROID_KEY_BASE64"
           cd src-tauri/gen/android
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
-          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+          echo "keyAlias=$ANDROID_KEY_ALIAS" > keystore.properties
+          echo "keyPassword=$ANDROID_KEY_PASSWORD" >> keystore.properties
+          echo "storePassword=$ANDROID_KEY_PASSWORD" >> keystore.properties
           echo "storeType=JKS" >> keystore.properties
-          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/keystore.jks"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+          keytool -list -keystore "$RUNNER_TEMP/keystore.jks" -storetype JKS -storepass "$ANDROID_KEY_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
       - name: build android apk
@@ -203,12 +212,21 @@ jobs:
           printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON" > src-tauri/gen/android/app/google-services.json
 
       - name: setup Android signing
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
         run: |
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          test -n "$ANDROID_KEY_BASE64"
           cd src-tauri/gen/android
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
-          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+          echo "keyAlias=$ANDROID_KEY_ALIAS" > keystore.properties
+          echo "keyPassword=$ANDROID_KEY_PASSWORD" >> keystore.properties
+          echo "storePassword=$ANDROID_KEY_PASSWORD" >> keystore.properties
           echo "storeType=JKS" >> keystore.properties
-          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/keystore.jks"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+          keytool -list -keystore "$RUNNER_TEMP/keystore.jks" -storetype JKS -storepass "$ANDROID_KEY_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
       - name: build android apk

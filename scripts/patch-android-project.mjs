@@ -57,10 +57,12 @@ if (!appGradle.includes('signingConfigs {') && appGradle.includes('buildTypes {'
             if (keystorePropertiesFile.exists()) {
                 keystoreProperties.load(FileInputStream(keystorePropertiesFile))
                 keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["password"] as String
+                keyPassword = (keystoreProperties["keyPassword"] as? String)
+                    ?: (keystoreProperties["password"] as String)
                 storeFile = file(keystoreProperties["storeFile"] as String)
                 storeType = (keystoreProperties["storeType"] as? String) ?: "JKS"
-                storePassword = keystoreProperties["password"] as String
+                storePassword = (keystoreProperties["storePassword"] as? String)
+                    ?: (keystoreProperties["password"] as String)
             }
         }
     }
