@@ -21,6 +21,7 @@ import {
   ChevronDown,
   Clapperboard,
   CornerUpLeft,
+  Heart,
   Info,
   Loader2,
   Mic,
@@ -156,6 +157,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   const [message, setMessage] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  const [favStickerUrls, setFavStickerUrls] = useState<Set<string>>(new Set());
   const [sendingMedia, setSendingMedia] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
   const [otherUser, setOtherUser] = useState<any>(null);
@@ -405,6 +407,41 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     setPendingExternalUrl(href);
   }, []);
 
+  // ── Load & toggle sticker favorites ────────────────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    supabase
+      .from('sticker_favorites')
+      .select('sticker_id, stickers(url)')
+      .eq('user_id', user.id)
+      .then(({ data }) => {
+        if (!data) return;
+        const urls = new Set(
+          data.map((row: any) => row.stickers?.url as string).filter(Boolean)
+        );
+        setFavStickerUrls(urls);
+      });
+  }, [user?.id]);
+
+  const toggleStickerFavByUrl = useCallback(async (stickerUrl: string) => {
+    if (!user?.id) return;
+    if (favStickerUrls.has(stickerUrl)) {
+      // Remove
+      setFavStickerUrls((prev) => { const s = new Set(prev); s.delete(stickerUrl); return s; });
+      const { data } = await supabase.from('stickers').select('id').eq('url', stickerUrl).maybeSingle();
+      if (data?.id) {
+        await supabase.from('sticker_favorites').delete().eq('user_id', user.id).eq('sticker_id', data.id);
+      }
+    } else {
+      // Add
+      setFavStickerUrls((prev) => new Set(prev).add(stickerUrl));
+      const { data } = await supabase.from('stickers').select('id').eq('url', stickerUrl).maybeSingle();
+      if (data?.id) {
+        await supabase.from('sticker_favorites').upsert({ user_id: user.id, sticker_id: data.id });
+      }
+    }
+  }, [user?.id, favStickerUrls]);
+
   const renderMessageContent = (content: string) => {
     const replyPrefixMatch = content.match(/^↪(?:\[id:([^\]]+)\]\s)?(.+?)\n([\s\S]*)$/);
     if (replyPrefixMatch) {
@@ -436,13 +473,34 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             }
             if (media.spoiler) return <SpoilerChatImage src={media.url} />;
             const isSticker = media.url.includes('/stickers/');
+            if (isSticker) {
+              const isFav = favStickerUrls.has(media.url);
+              return (
+                <div className="relative inline-block group/sticker">
+                  <img
+                    src={media.url}
+                    alt="Sticker"
+                    className="max-w-[128px] max-h-[128px] object-contain rounded-xl"
+                    draggable={false}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void toggleStickerFavByUrl(media.url)}
+                    className={`absolute bottom-1 right-1 h-7 w-7 rounded-full flex items-center justify-center shadow-md transition-all opacity-0 group-hover/sticker:opacity-100 ${
+                      isFav ? 'bg-red-500/90 text-white' : 'bg-background/80 text-muted-foreground hover:text-red-400'
+                    }`}
+                    aria-label={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+                  >
+                    <Heart size={13} fill={isFav ? 'currentColor' : 'none'} />
+                  </button>
+                </div>
+              );
+            }
             return (
               <img
                 src={media.url}
                 alt="Media message"
-                className={isSticker
-                  ? "max-w-[128px] max-h-[128px] object-contain rounded-xl"
-                  : "w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"}
+                className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
                 draggable={false}
               />
             );
@@ -455,13 +513,34 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     if (topMedia) {
       if (topMedia.spoiler) return <SpoilerChatImage src={topMedia.url} />;
       const isSticker = topMedia.url.includes('/stickers/');
+      if (isSticker) {
+        const isFav = favStickerUrls.has(topMedia.url);
+        return (
+          <div className="relative inline-block group/sticker">
+            <img
+              src={topMedia.url}
+              alt="Sticker"
+              className="max-w-[128px] max-h-[128px] object-contain rounded-xl"
+              draggable={false}
+            />
+            <button
+              type="button"
+              onClick={() => void toggleStickerFavByUrl(topMedia.url)}
+              className={`absolute bottom-1 right-1 h-7 w-7 rounded-full flex items-center justify-center shadow-md transition-all opacity-0 group-hover/sticker:opacity-100 ${
+                isFav ? 'bg-red-500/90 text-white' : 'bg-background/80 text-muted-foreground hover:text-red-400'
+              }`}
+              aria-label={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+            >
+              <Heart size={13} fill={isFav ? 'currentColor' : 'none'} />
+            </button>
+          </div>
+        );
+      }
       return (
         <img
           src={topMedia.url}
           alt="Media message"
-          className={isSticker
-            ? "max-w-[128px] max-h-[128px] object-contain rounded-xl"
-            : "w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"}
+          className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
           draggable={false}
         />
       );
