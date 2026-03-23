@@ -451,23 +451,23 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
   return (
     <div className="flex flex-col h-full bg-background/50 backdrop-blur-sm">
       {/* Header */}
-      <div className="p-4 flex items-center justify-between gap-2 border-b border-border/30">
-        <h1 className="text-2xl font-bold tracking-tight text-foreground shrink-0">Messages</h1>
+      <div className="px-3 py-3 md:p-4 flex items-center justify-between gap-2 border-b border-border/30">
+        <h1 className="text-xl md:text-2xl font-bold tracking-tight text-foreground shrink-0">Messages</h1>
         <div className="flex items-center gap-1.5 shrink-0">
           <PresenceStatusControl />
           <button
             type="button"
             title="Friends"
             onClick={() => navigate('/friends')}
-            className="h-9 w-9 flex items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+            className="h-8 w-8 md:h-9 md:w-9 flex items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
           >
-            <Plus size={20} />
+            <Plus size={18} />
           </button>
         </div>
       </div>
 
       {/* Search */}
-      <div className="p-4">
+      <div className="px-3 py-3 md:p-4">
         <div className="relative">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input placeholder="Search messages or friends" className="pl-9 h-10 border-none bg-secondary/50 focus-visible:bg-secondary/80 focus-visible:ring-1 focus-visible:ring-primary/50 rounded-xl" />
@@ -475,7 +475,7 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-1 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto px-2 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] md:pb-4 space-y-1 custom-scrollbar">
         {loading ? (
           <div className="flex justify-center p-4"><Loader2 className="animate-spin text-muted-foreground" size={24} /></div>
         ) : chats.length === 0 ? (
@@ -543,7 +543,7 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
                       </span>
                     ) : null}
                   </span>
-                  <span className={cn("text-xs whitespace-nowrap ml-2", chat.unread > 0 ? "text-primary font-medium" : "text-muted-foreground")}>
+                  <span className={cn("text-[11px] whitespace-nowrap ml-2", chat.unread > 0 ? "text-primary font-medium" : "text-muted-foreground")}>
                     {chat.time}
                   </span>
                 </div>

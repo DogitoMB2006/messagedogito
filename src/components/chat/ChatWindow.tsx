@@ -1402,6 +1402,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
   const canToggleGif = useMemo(() => !disableComposer, [disableComposer]);
   const canToggleEmoji = useMemo(() => !disableComposer && !hasSelectedImage, [disableComposer, hasSelectedImage]);
+  const emojiPickerWidth = typeof window === 'undefined' ? 320 : Math.min(window.innerWidth - 24, 340);
 
   if (loading) {
     return (
@@ -1447,12 +1448,12 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       )}
 
       {/* Top Bar */}
-      <div className="flex items-center justify-between p-4 border-b border-border/30 bg-background/80 backdrop-blur-md z-10 sticky top-0">
+      <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:p-4 border-b border-border/30 bg-background/80 backdrop-blur-md z-10 sticky top-0">
         <div className="flex min-w-0 items-center gap-3 cursor-pointer group" onClick={onToggleProfile}>
           {onBack ? (
             <button
               type="button"
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/40 bg-secondary/35 text-foreground transition-colors hover:bg-secondary/60 md:hidden"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border/40 bg-secondary/35 text-foreground transition-colors hover:bg-secondary/60 md:hidden"
               onClick={(e) => {
                 e.stopPropagation();
                 onBack();
@@ -1465,19 +1466,20 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           <Avatar
             fallback={isGroup ? chatRow?.name || 'Group' : otherUser?.display_name || '?'}
             src={isGroup ? chatRow?.avatar_url : otherUser?.avatar_url}
+            className="h-9 w-9 md:h-10 md:w-10"
           />
           <div className="min-w-0">
-            <h2 className="font-semibold text-foreground group-hover:text-primary transition-colors">
+            <h2 className="font-semibold text-sm md:text-base text-foreground group-hover:text-primary transition-colors truncate">
               {isGroup ? chatRow?.name || 'Group' : otherUser?.display_name || 'Loading...'}
             </h2>
             {isGroup ? (
-              <div className="space-y-0.5 min-w-0 max-w-[min(100%,220px)] sm:max-w-[min(100%,320px)]">
+              <div className="space-y-0.5 min-w-0 max-w-[min(100%,180px)] sm:max-w-[min(100%,320px)]">
                 {typingBannerRow ? (
                   <div className="text-primary/90 [&_p]:text-primary/90" aria-hidden>
                     {typingBannerRow}
                   </div>
                 ) : null}
-                <p className="text-xs font-medium tracking-wide text-muted-foreground">
+                <p className="text-[11px] font-medium tracking-wide text-muted-foreground">
                   {Object.keys(senderNameById).length} members
                 </p>
               </div>
@@ -1494,7 +1496,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           </div>
         </div>
 
-        <div className="flex items-center gap-1 sm:gap-2 text-muted-foreground">
+        <div className="flex items-center gap-1 sm:gap-2 text-muted-foreground shrink-0">
           {!isGroup && (
             <button
               className="p-2 rounded-full hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1709,7 +1711,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       <div className="relative z-0 flex-1 min-h-0 flex flex-col">
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col custom-scrollbar"
+          className="flex-1 min-h-0 overflow-y-auto px-3 py-3 sm:p-4 flex flex-col custom-scrollbar"
           onClickCapture={handleMessagesLinkClick}
         >
         {messages.map((msg, idx) => {
@@ -1779,7 +1781,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               }}
             >
               <div
-                className={`flex max-w-[min(70%,28rem)] gap-2 min-w-0 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'} ${
+                className={`flex items-start max-w-[min(86vw,30rem)] md:max-w-[min(70%,28rem)] gap-2.5 min-w-0 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'} ${
                   msgId && highlightedMessageId && String(msgId) === highlightedMessageId
                     ? 'ring-2 ring-primary/70 rounded-2xl shadow-[0_0_0_4px_rgba(59,130,246,0.18)] transition-all'
                     : ''
@@ -1787,7 +1789,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               >
                 {isGroup && (
                   <div
-                    className={`w-8 shrink-0 flex flex-col ${isMe ? 'items-end' : 'items-start'} ${sameSenderRun ? 'justify-end pb-1' : 'justify-end'}`}
+                    className={`w-8 shrink-0 flex flex-col ${isMe ? 'items-end' : 'items-start'} ${sameSenderRun ? 'pt-8' : 'pt-1'}`}
                   >
                     {runStart ? (
                       !isMe && onPeekUser ? (
@@ -1817,12 +1819,12 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                         />
                       )
                     ) : (
-                      <span className="block w-8 h-8 shrink-0" aria-hidden />
+                      <span className="block w-8 h-8 shrink-0 opacity-0" aria-hidden />
                     )}
                   </div>
                 )}
                 <div
-                  className={`flex flex-col min-w-0 flex-1 ${isMe ? 'items-end' : 'items-start'}`}
+                  className={`flex flex-col min-w-0 max-w-full ${isMe ? 'items-end' : 'items-start'}`}
                 >
                   {isGroup && runStart && (
                     <div
@@ -1832,13 +1834,13 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                         <button
                           type="button"
                           onClick={() => onPeekUser(msg.sender_id)}
-                          className="text-[10px] font-medium text-muted-foreground truncate max-w-full rounded-md px-1 py-0.5 -mx-1 hover:bg-secondary/60 transition-colors text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          className="text-[11px] font-medium text-muted-foreground truncate max-w-full rounded-md px-1 py-0.5 -mx-1 hover:bg-secondary/60 transition-colors text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
                           aria-label={`View profile: ${senderNameById[msg.sender_id] || 'User'}`}
                         >
                           {senderNameById[msg.sender_id] || 'User'}
                         </button>
                       ) : (
-                        <span className="text-[10px] font-medium text-muted-foreground truncate max-w-[200px]">
+                        <span className="text-[11px] font-medium text-muted-foreground truncate max-w-[220px]">
                           {isMe ? 'You' : senderNameById[msg.sender_id] || 'User'}
                         </span>
                       )}
@@ -1846,7 +1848,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   )}
                 <div
                   className={[
-                    isMediaMessage && !isEditingThis ? 'p-0 bg-transparent border border-border/40 rounded-2xl overflow-hidden' : 'px-4 py-2.5 rounded-2xl',
+                    isMediaMessage && !isEditingThis ? 'p-0 bg-transparent border border-border/40 rounded-2xl overflow-hidden' : 'px-4 py-3 md:py-2.5 rounded-2xl',
                     isMediaMessage && !isEditingThis
                       ? ''
                       : isMe
@@ -1907,8 +1909,8 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   ) : null}
                 </div>
 
-                <div className={`flex items-center gap-2 px-1 ${sameSenderRun ? 'mt-0.5' : 'mt-1'}`}>
-                  <span className="text-[10px] text-muted-foreground">
+                <div className={`flex items-center gap-1.5 px-1.5 ${sameSenderRun ? 'mt-0.5' : 'mt-1'}`}>
+                  <span className="text-[10px] text-muted-foreground/90">
                     {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                   {isMe && !isEditingThis && (
@@ -1916,7 +1918,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                       <button
                         type="button"
                         onClick={() => startReplyMessage(msg)}
-                        className="inline-flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                        className="hidden sm:inline-flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
                         aria-label="Reply to message"
                       >
                         <CornerUpLeft size={10} />
@@ -1926,7 +1928,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                         <button
                           type="button"
                           onClick={() => startEditingMessage(msg)}
-                          className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                            className="hidden sm:inline-flex text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
                         >
                           Edit
                         </button>
@@ -1934,7 +1936,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                       <button
                         type="button"
                         onClick={() => requestDeleteMessage(msg)}
-                        className="inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300 hover:bg-red-500/15"
+                        className="hidden sm:inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300 hover:bg-red-500/15"
                         aria-label="Delete message"
                       >
                         <Trash2 size={10} />
@@ -1946,7 +1948,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                     <button
                       type="button"
                       onClick={() => requestDeleteMessage(msg)}
-                      className="inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300"
+                      className="hidden sm:inline-flex items-center gap-1 text-[10px] text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/30 hover:text-red-300"
                       aria-label="Delete message"
                     >
                       <Trash2 size={10} />
@@ -1957,7 +1959,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                     <button
                       type="button"
                       onClick={() => startReplyMessage(msg)}
-                      className="inline-flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
+                      className="hidden sm:inline-flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded-full bg-secondary/20 border border-border/30 hover:text-foreground hover:bg-secondary/30"
                       aria-label="Reply to message"
                     >
                       <CornerUpLeft size={10} />
@@ -1998,7 +2000,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       </div>
 
       {/* Input Area */}
-      <div className="p-4 bg-background/80 backdrop-blur-md border-t border-border/30 relative">
+      <div className="px-3 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:p-4 bg-background/80 backdrop-blur-md border-t border-border/30 relative">
         <input
           ref={fileInputRef}
           type="file"
@@ -2098,22 +2100,22 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           </div>
         ) : null}
 
-        <div className="flex items-end gap-2 bg-secondary/30 border border-border/50 rounded-3xl p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200 min-w-0">
+        <div className="flex items-end gap-1.5 sm:gap-2 bg-secondary/30 border border-border/50 rounded-[1.7rem] sm:rounded-3xl p-1.5 sm:p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200 min-w-0">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
+            className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
             aria-label="Send image"
             disabled={!user || sendingMedia || editingMessageId !== null}
           >
-            <Paperclip size={20} />
+            <Paperclip size={18} />
           </button>
 
           <div className="relative flex-1 min-w-0 py-1">
             <div className="relative min-w-0">
               <div
                 ref={composerMirrorRef}
-                className={`w-full min-w-0 max-w-full text-sm py-2.5 pr-2 pl-0.5 min-h-[40px] max-h-[200px] overflow-y-auto overflow-x-hidden pointer-events-none whitespace-pre-wrap break-words [overflow-wrap:anywhere] emoji-render [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+                className={`w-full min-w-0 max-w-full text-[15px] sm:text-sm py-2 pr-2 pl-0.5 min-h-[40px] max-h-[200px] overflow-y-auto overflow-x-hidden pointer-events-none whitespace-pre-wrap break-words [overflow-wrap:anywhere] emoji-render [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
                   message ? 'text-foreground' : 'text-muted-foreground'
                 }`}
                 dangerouslySetInnerHTML={{
@@ -2122,7 +2124,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               />
               <textarea
                 ref={composerTextareaRef}
-                className="absolute left-0 right-0 top-0 w-full min-w-0 max-h-[200px] resize-none bg-transparent border-none focus:outline-none focus:ring-0 text-sm text-transparent caret-foreground py-2.5 pr-2 pl-0.5 overflow-y-auto overflow-x-hidden custom-scrollbar"
+                className="absolute left-0 right-0 top-0 w-full min-w-0 max-h-[200px] resize-none bg-transparent border-none focus:outline-none focus:ring-0 text-[15px] sm:text-sm text-transparent caret-foreground py-2 pr-2 pl-0.5 overflow-y-auto overflow-x-hidden custom-scrollbar"
                 placeholder=""
                 rows={1}
                 value={message}
@@ -2143,10 +2145,10 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             </div>
           </div>
 
-          <div ref={emojiPickerWrapperRef} className="relative hidden sm:block">
+          <div ref={emojiPickerWrapperRef} className="relative block">
             <button
               type="button"
-              className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
+              className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
               aria-label="Emoji"
               disabled={!user || sendingMedia || editingMessageId !== null}
               onClick={() => {
@@ -2155,14 +2157,14 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 setEmojiOpen((v) => !v);
               }}
             >
-              <Smile size={20} />
+              <Smile size={18} />
             </button>
             {emojiOpen && (
               <div className="absolute bottom-full right-0 mb-3 z-50">
                 <EmojiPicker
                   theme={Theme.DARK}
                   height={360}
-                  width={340}
+                  width={emojiPickerWidth}
                   searchDisabled={false}
                   skinTonesDisabled={false}
                   previewConfig={{ showPreview: false }}
@@ -2174,7 +2176,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             )}
           </div>
 
-          <div className="relative hidden sm:block">
+          <div className="relative block">
             <button
               type="button"
               onClick={() => {
@@ -2182,14 +2184,14 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 setEmojiOpen(false);
                 setGifOpen((v) => !v);
               }}
-              className="p-2.5 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
+              className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
               aria-label="Send GIF"
               disabled={!user || sendingMedia || editingMessageId !== null}
             >
-              <Clapperboard size={20} />
+              <Clapperboard size={18} />
             </button>
             {gifOpen && (
-              <div className="absolute bottom-full right-0 mb-3 w-[420px]">
+              <div className="absolute bottom-full right-0 mb-3 w-[min(calc(100vw-1.5rem),420px)] max-w-[420px]">
                 <GifPicker
                   onClose={() => setGifOpen(false)}
                   onSelect={(gifUrl) => {
@@ -2208,7 +2210,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               editingMessageId !== null ||
               (imagePreviewUrl ? false : !message.trim())
             }
-            className="p-2.5 rounded-full bg-primary text-white hover:bg-primary/90 transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100 shrink-0 flex items-center justify-center mr-0.5 shadow-md shadow-primary/30"
+            className="p-2 rounded-full bg-primary text-white hover:bg-primary/90 transition-transform active:scale-95 disabled:opacity-50 disabled:active:scale-100 shrink-0 flex items-center justify-center mr-0.5 shadow-md shadow-primary/30"
           >
             <Send size={18} className="translate-x-[1px]" />
           </button>
