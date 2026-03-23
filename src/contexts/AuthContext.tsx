@@ -7,7 +7,7 @@ import { invalidateChatList } from '../lib/chatListInvalidate';
 import { dispatchMessageRowInserted, dispatchMessageRowUpdated } from '../lib/messageRowUpdated';
 import { getHashPathname } from '../lib/hashRouterLocation';
 import { splitLeadingReply, getNotificationMessageBody, isChatMediaUrl } from '../lib/replyMessageFormat';
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { isPermissionGranted, requestPermission, sendNotification } from '../lib/notifications';
 import { arePresenceNotificationsSilenced, runPresenceOfflineBeforeSignOut } from '../lib/presenceNotifyGate';
 import {
   ensureAndroidPushRegistration,

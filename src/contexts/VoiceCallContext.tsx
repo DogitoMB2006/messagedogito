@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { isPermissionGranted, requestPermission, sendNotification } from '../lib/notifications';
 import { useAuth } from './AuthContext';
 import { supabase } from '../lib/supabase';
 import { VoiceWebRtcSession } from '../lib/voiceCall';

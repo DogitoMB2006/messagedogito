@@ -60,7 +60,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notifications::init())
         .plugin(tauri_plugin_opener::init());
 
     #[cfg(desktop)]
@@ -86,12 +86,6 @@ pub fn run() {
                 _ => {}
             });
     }
-
-    #[cfg(mobile)]
-    {
-        builder = builder.plugin(tauri_plugin_notifications::init());
-    }
-
     builder
         .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())

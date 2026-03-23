@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { check, type Update } from '@tauri-apps/plugin-updater';
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { isPermissionGranted, requestPermission, sendNotification } from '../lib/notifications';
 import { arePresenceNotificationsSilenced } from '../lib/presenceNotifyGate';
 import { checkAndroidReleaseUpdate, type AndroidReleaseUpdate } from '../lib/androidUpdate';
 import { isNativeAndroidApp } from '../lib/runtime';
