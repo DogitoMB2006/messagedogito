@@ -24,6 +24,7 @@ import {
 } from '../lib/voiceCall';
 import { IncomingCallModal } from '../components/voice/IncomingCallModal';
 import { whenRealtimeSubscribed } from '../lib/whenRealtimeSubscribed';
+import { sendMobilePushNotification } from '../lib/mobilePush';
 
 type VoicePhase = 'idle' | 'ringing-outgoing' | 'ringing-incoming' | 'active';
 
@@ -475,6 +476,14 @@ export function VoiceCallProvider({ children }: { children: React.ReactNode }) {
         } finally {
           await supabase.removeChannel(inbox);
         }
+
+        await sendMobilePushNotification(supabase, {
+          chatId,
+          recipientUserIds: [calleeUserId],
+          title: 'Incoming call',
+          body: `${callerDisplayName} is calling you on DogitoChat`,
+          kind: 'incoming_call',
+        });
 
         clearRingTimeout();
         ringTimeoutRef.current = window.setTimeout(async () => {

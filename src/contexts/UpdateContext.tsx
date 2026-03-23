@@ -1,8 +1,11 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { arePresenceNotificationsSilenced } from '../lib/presenceNotifyGate';
+import { checkAndroidReleaseUpdate, type AndroidReleaseUpdate } from '../lib/androidUpdate';
+import { isNativeAndroidApp } from '../lib/runtime';
 
 type UpdateStatusTone = 'info' | 'error';
 
@@ -12,7 +15,7 @@ interface UpdateStatus {
 }
 
 interface UpdateContextType {
-  pendingUpdate: Update | null;
+  pendingUpdate: AppUpdate | null;
   isUpdateModalOpen: boolean;
   isChecking: boolean;
   updateStatus: UpdateStatus | null;
@@ -20,6 +23,15 @@ interface UpdateContextType {
   closeUpdateModal: () => void;
   dismissUpdateStatus: () => void;
 }
+
+export type AppUpdate =
+  | {
+      kind: 'desktop';
+      version: string;
+      body: string;
+      desktopUpdate: Update;
+    }
+  | AndroidReleaseUpdate;
 
 const UpdateContext = createContext<UpdateContextType | undefined>(undefined);
 
@@ -51,7 +63,7 @@ function writeDismissedUpdateVersion(version: string | null) {
 }
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
-  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<AppUpdate | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
@@ -89,7 +101,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     const normalizedMessage = message.toLowerCase();
 
     if (normalizedMessage.includes('404')) {
-      return 'Update feed is missing from the latest GitHub release.';
+      return isNativeAndroidApp()
+        ? 'Android update feed is missing from the latest GitHub release.'
+        : 'Update feed is missing from the latest GitHub release.';
     }
 
     if (normalizedMessage.includes('network') || normalizedMessage.includes('failed to fetch')) {
@@ -130,7 +144,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const notifyAboutUpdate = useCallback(async (update: Update) => {
+  const notifyAboutUpdate = useCallback(async (update: AppUpdate) => {
     if (notifiedVersionRef.current === update.version) {
       return;
     }
@@ -151,7 +165,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
     await sendNotification({
       title: 'DogitoChat update available',
-      body: `Version ${update.version} is ready to install.`,
+      body:
+        update.kind === 'android'
+          ? `Version ${update.version} is ready to download on Android.`
+          : `Version ${update.version} is ready to install.`,
     });
 
     notifiedVersionRef.current = update.version;
@@ -164,9 +181,23 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         dismissUpdateStatus();
       }
 
-      const update = await check({ timeout: 30000 });
+      const update = isNativeAndroidApp()
+        ? await (async () => {
+            const currentVersion = await getVersion();
+            return await checkAndroidReleaseUpdate(currentVersion);
+          })()
+        : await (async () => {
+            const desktopUpdate = await check({ timeout: 30000 });
+            if (!desktopUpdate?.available) return null;
+            return {
+              kind: 'desktop' as const,
+              version: desktopUpdate.version,
+              body: desktopUpdate.body ?? 'No release notes provided.',
+              desktopUpdate,
+            };
+          })();
 
-      if (update?.available) {
+      if (update) {
         const dismissedVersion = dismissedVersionRef.current;
         const shouldAutoOpen = !silent || (dismissedVersion !== update.version && autoPromptedVersionRef.current !== update.version);
 
@@ -183,14 +214,17 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        const currentWindow = getCurrentWindow();
-        const [isVisible, isMinimized] = await Promise.all([
-          currentWindow.isVisible().catch(() => true),
-          currentWindow.isMinimized().catch(() => false),
-        ]);
+        let shouldRevealWindow = false;
+        if (!isNativeAndroidApp()) {
+          const currentWindow = getCurrentWindow();
+          const [isVisible, isMinimized] = await Promise.all([
+            currentWindow.isVisible().catch(() => true),
+            currentWindow.isMinimized().catch(() => false),
+          ]);
+          shouldRevealWindow = silent && shouldAutoOpen && (!isVisible || isMinimized);
+        }
 
-        const shouldRevealWindow = silent && shouldAutoOpen && (!isVisible || isMinimized);
-        const shouldNotify = silent && shouldAutoOpen && (!document.hasFocus() || shouldRevealWindow);
+        const shouldNotify = silent && shouldAutoOpen && (!document.hasFocus() || shouldRevealWindow || isNativeAndroidApp());
 
         if (shouldNotify) {
           await notifyAboutUpdate(update);

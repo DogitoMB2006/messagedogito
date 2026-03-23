@@ -12,12 +12,14 @@ import {
   readAutostartEnabledFromOs,
   setAutostartEnabled,
 } from '../lib/autostart';
+import { isDesktopChromeAvailable } from '../lib/runtime';
 
 export function Settings() {
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [autostart, setAutostart] = useState(() => getAutostartPreference());
   const [autostartBusy, setAutostartBusy] = useState(false);
   const { profile, signOut } = useAuth();
+  const showDesktopAutostart = isDesktopChromeAvailable();
 
   useEffect(() => {
     let cancelled = false;
@@ -88,10 +90,11 @@ export function Settings() {
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
-                <div>
-                  <h4 className="font-medium text-foreground flex items-center gap-2">
-                    <Power size={16} className="text-muted-foreground" /> Open when system starts
+              {showDesktopAutostart ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
+                  <div>
+                    <h4 className="font-medium text-foreground flex items-center gap-2">
+                      <Power size={16} className="text-muted-foreground" /> Open when system starts
                   </h4>
                   <p className="text-sm text-muted-foreground mt-0.5">
                     Launch DogitoChat when you log in to your computer. Desktop app only; ignored in the browser.
@@ -124,7 +127,8 @@ export function Settings() {
                     )}
                   />
                 </button>
-              </div>
+                </div>
+              ) : null}
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
                 <div>

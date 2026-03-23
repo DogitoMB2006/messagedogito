@@ -9,6 +9,10 @@ import { getHashPathname } from '../lib/hashRouterLocation';
 import { splitLeadingReply, getNotificationMessageBody, isChatMediaUrl } from '../lib/replyMessageFormat';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { arePresenceNotificationsSilenced, runPresenceOfflineBeforeSignOut } from '../lib/presenceNotifyGate';
+import {
+  ensureAndroidPushRegistration,
+  unregisterAndroidPushDevice,
+} from '../lib/mobilePush';
 
 export interface UserProfile {
   id: string;
@@ -59,6 +63,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    if (user?.id) {
+      await unregisterAndroidPushDevice(supabase, user.id);
+    }
     await runPresenceOfflineBeforeSignOut();
     await supabase.auth.signOut();
   };
@@ -110,6 +117,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Global push notifications listener
+  useEffect(() => {
+    if (!user?.id) return;
+    void ensureAndroidPushRegistration(supabase, user.id);
+  }, [user?.id]);
+
   useEffect(() => {
     if (!user) {
       chatMembershipRef.current = new Set();

@@ -19,6 +19,13 @@ export function Home() {
   const [peekUserId, setPeekUserId] = useState<string | null>(null);
   const [activeFriendId, setActiveFriendId] = useState<string | null>(null);
   const [activeChatIsGroup, setActiveChatIsGroup] = useState(false);
+  const mobileProfileOpen = Boolean(activeChat && ((peekUserId && activeChat) || (showProfile && (activeChatIsGroup || activeFriendId))));
+
+  const clearActiveChat = () => {
+    setShowProfile(false);
+    setPeekUserId(null);
+    setSearchParams({});
+  };
 
   useEffect(() => {
     setActiveChat(searchParams.get('id'));
@@ -61,7 +68,7 @@ export function Home() {
     <MainLayout>
       <div className="flex h-full w-full overflow-hidden bg-background">
         {/* Left Side: Chats & Friends List */}
-        <div className="w-full md:w-80 lg:w-[350px] shrink-0 border-r border-border/50 h-full flex flex-col">
+        <div className={`${activeChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-[350px] shrink-0 border-r border-border/50 h-full flex-col`}>
           <ChatList
             activeChat={activeChat}
             onSelectChat={(id) => {
@@ -74,10 +81,11 @@ export function Home() {
         </div>
 
         {/* Center: Active Chat Window */}
-        <div className="flex-1 flex flex-col h-full bg-background relative overflow-hidden hidden md:flex">
+        <div className={`${activeChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col h-full bg-background relative overflow-hidden`}>
           {activeChat ? (
             <ChatWindow 
               chatId={activeChat} 
+              onBack={clearActiveChat}
               onToggleProfile={() => {
                 setPeekUserId(null);
                 setShowProfile((p) => !p);
@@ -133,6 +141,25 @@ export function Home() {
             </div>
           </>
         )}
+
+        {mobileProfileOpen && activeChat ? (
+          <div className="fixed inset-0 z-50 bg-background md:hidden">
+            {peekUserId ? (
+              <UserPeekSidebar userId={peekUserId} onClose={() => setPeekUserId(null)} />
+            ) : activeChatIsGroup ? (
+              <GroupProfileSidebar
+                chatId={activeChat}
+                onClose={() => setShowProfile(false)}
+                onLeftGroup={() => {
+                  setShowProfile(false);
+                  clearActiveChat();
+                }}
+              />
+            ) : activeFriendId ? (
+              <FriendProfileSidebar userId={activeFriendId} onClose={() => setShowProfile(false)} />
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </MainLayout>
   );

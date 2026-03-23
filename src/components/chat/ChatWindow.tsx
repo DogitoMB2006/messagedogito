@@ -17,6 +17,7 @@ import { peerPresenceLabel, peerPresenceSubtextClass, resolvePeerPresence } from
 import { subscribePeerPresenceBroadcast } from '../../lib/presenceBroadcastBridge';
 import { useNavigate } from 'react-router-dom';
 import {
+  ArrowLeft,
   ChevronDown,
   Clapperboard,
   CornerUpLeft,
@@ -49,6 +50,7 @@ import { GROUP_LEAVE_MESSAGE, isGroupLeaveMessage } from '../../lib/groupMessage
 import { formatChatMessageHtml } from '../../lib/chatRichText';
 import {
   buildChatImageMessageContent,
+  getNotificationMessageBody,
   getQuotedMessageLabel,
   isChatMediaUrl,
   parseChatMediaPayload,
@@ -63,10 +65,12 @@ import { dispatchChatRead, dispatchFriendDmRead, markDmChatRead } from '../../li
 import { useVoiceCall } from '../../contexts/VoiceCallContext';
 import { whenRealtimeSubscribed } from '../../lib/whenRealtimeSubscribed';
 import { httpBroadcastChatMessages } from '../../lib/chatRealtimeBroadcast';
+import { sendMobilePushNotification } from '../../lib/mobilePush';
 import { openExternalUrl } from '../../lib/openExternalUrl';
 
 interface ChatWindowProps {
   chatId: string;
+  onBack?: () => void;
   onToggleProfile: () => void;
   isProfileOpen: boolean;
   /** Group chats: open member profile preview (right panel on Home). */
@@ -125,7 +129,7 @@ function mergeSilentServerMessages(prev: any[], server: any[] | null | undefined
   );
 }
 
-export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser }: ChatWindowProps) {
+export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onPeekUser }: ChatWindowProps) {
   const { user, profile } = useAuth();
   const {
     phase: voicePhase,
@@ -464,6 +468,45 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
   const getMessagePreviewLabel = (content: unknown) => getQuotedMessageLabel(content);
 
+  const notifyRecipientsAboutMessage = useCallback(
+    async (content: string) => {
+      if (!user?.id) return;
+
+      const body = getNotificationMessageBody(content);
+      if (!body) return;
+
+      if (isGroup) {
+        const { data } = await supabase
+          .from('chat_participants')
+          .select('user_id')
+          .eq('chat_id', chatId)
+          .neq('user_id', user.id);
+
+        const recipientUserIds = (data ?? []).map((row) => String(row.user_id));
+        if (recipientUserIds.length === 0) return;
+
+        await sendMobilePushNotification(supabase, {
+          chatId,
+          recipientUserIds,
+          title: chatRow?.name || 'New group message',
+          body: `${profile?.display_name || 'Someone'}: ${body}`,
+          kind: 'message',
+        });
+        return;
+      }
+
+      if (!otherUser?.id) return;
+      await sendMobilePushNotification(supabase, {
+        chatId,
+        recipientUserIds: [otherUser.id],
+        title: profile?.display_name || 'New message',
+        body,
+        kind: 'message',
+      });
+    },
+    [chatId, chatRow?.name, isGroup, otherUser?.id, profile?.display_name, user?.id],
+  );
+
   const insertMessage = async (content: string) => {
     if (!content.trim() || !user || removedFromGroup) return;
     if (content.trim() === GROUP_LEAVE_MESSAGE) return;
@@ -491,6 +534,8 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
     } catch (e) {
       console.warn('message_inserted http broadcast failed', e);
     }
+
+    void notifyRecipientsAboutMessage(data.content);
   };
 
   const sendMediaMessage = async (contentUrl: string) => {
@@ -1403,12 +1448,25 @@ export function ChatWindow({ chatId, onToggleProfile, isProfileOpen, onPeekUser 
 
       {/* Top Bar */}
       <div className="flex items-center justify-between p-4 border-b border-border/30 bg-background/80 backdrop-blur-md z-10 sticky top-0">
-        <div className="flex items-center gap-3 cursor-pointer group" onClick={onToggleProfile}>
+        <div className="flex min-w-0 items-center gap-3 cursor-pointer group" onClick={onToggleProfile}>
+          {onBack ? (
+            <button
+              type="button"
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/40 bg-secondary/35 text-foreground transition-colors hover:bg-secondary/60 md:hidden"
+              onClick={(e) => {
+                e.stopPropagation();
+                onBack();
+              }}
+              aria-label="Back to chats"
+            >
+              <ArrowLeft size={18} />
+            </button>
+          ) : null}
           <Avatar
             fallback={isGroup ? chatRow?.name || 'Group' : otherUser?.display_name || '?'}
             src={isGroup ? chatRow?.avatar_url : otherUser?.avatar_url}
           />
-          <div>
+          <div className="min-w-0">
             <h2 className="font-semibold text-foreground group-hover:text-primary transition-colors">
               {isGroup ? chatRow?.name || 'Group' : otherUser?.display_name || 'Loading...'}
             </h2>

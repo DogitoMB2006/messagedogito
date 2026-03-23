@@ -6,7 +6,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
+  release-desktop:
+    outputs:
+      releaseId: ${{ steps.desktop_tauri.outputs.releaseId }}
+      appVersion: ${{ steps.desktop_tauri.outputs.appVersion }}
     permissions:
       contents: write
     runs-on: windows-latest
@@ -37,6 +40,7 @@ jobs:
           "TAURI_PRIVATE_KEY_PATH=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: build and release
+        id: desktop_tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,6 +56,88 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'DogitoChat v__VERSION__'
-          releaseBody: 'Download the installer below to install or update DogitoChat.'
+          releaseBody: 'Download the installer or Android APK below to install or update DogitoChat.'
           releaseDraft: false
           prerelease: false
+
+  release-android:
+    needs: release-desktop
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: setup java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: setup android sdk
+        uses: android-actions/setup-android@v3
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      - name: init tauri android project
+        run: npm run tauri android init
+
+      - name: patch android project
+        run: node scripts/patch-android-project.mjs
+
+      - name: write firebase config
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON" > src-tauri/gen/android/app/google-services.json
+
+      - name: setup Android signing
+        run: |
+          cd src-tauri/gen/android
+          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/keystore.jks"
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+
+      - name: build android apk
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GIPHY_API_KEY: ${{ secrets.VITE_GIPHY_API_KEY }}
+          VITE_STUN_URLS: ${{ secrets.VITE_STUN_URLS }}
+          VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
+        with:
+          releaseId: ${{ needs.release-desktop.outputs.releaseId }}
+          tagName: ${{ github.ref_name }}
+          mobile: android
+          args: --apk
+          uploadUpdaterJson: false
+          releaseAssetNamePattern: '[name]_[version]_[platform]_[arch][ext]'
+
+      - name: create android latest manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK_URL=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+          node scripts/create-android-latest-manifest.mjs ${{ needs.release-desktop.outputs.appVersion }} "$APK_URL" "Download the latest DogitoChat Android APK from this release."
+
+      - name: upload android latest manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} android-latest.json --clobber

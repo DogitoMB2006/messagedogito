@@ -32,6 +32,11 @@ dist-ssr
 # Tauri Updater Keys
 *.key
 *.key.pub
+src-tauri/gen/android/
+google-services.json
+keystore.properties
+.local-secrets/
+supabase/.temp/
 PUBLISHING.md
 supabase/group_chats_schema.sql
 .gitignore

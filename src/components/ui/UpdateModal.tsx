@@ -1,12 +1,14 @@
 import { useState } from 'react';
-import type { Update } from '@tauri-apps/plugin-updater';
 import { Modal } from './modal';
 import { Button } from './button';
 import { Loader2, DownloadCloud, CheckCircle } from 'lucide-react';
 import { relaunch } from '@tauri-apps/plugin-process';
+import type { AppUpdate } from '../../contexts/UpdateContext';
+import { downloadAndroidApk } from '../../lib/androidUpdate';
+import { isNativeAndroidApp } from '../../lib/runtime';
 
 interface UpdateModalProps {
-  update: Update;
+  update: AppUpdate;
   onClose: () => void;
 }
 
@@ -17,6 +19,20 @@ export function UpdateModal({ update, onClose }: UpdateModalProps) {
   const [error, setError] = useState<string | null>(null);
 
   const startUpdate = async () => {
+    if (update.kind === 'android') {
+      setDownloading(true);
+      setError(null);
+      try {
+        await downloadAndroidApk(update.downloadUrl);
+      } catch (err) {
+        console.error('Android update open failed', err);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDownloading(false);
+      }
+      return;
+    }
+
     setDownloading(true);
     setError(null);
     setProgress(0);
@@ -24,7 +40,7 @@ export function UpdateModal({ update, onClose }: UpdateModalProps) {
     let contentLength = 0;
 
     try {
-      await update.downloadAndInstall((event) => {
+      await update.desktopUpdate.downloadAndInstall((event) => {
         switch (event.event) {
           case 'Started':
             contentLength = event.data.contentLength ?? 0;
@@ -87,13 +103,15 @@ export function UpdateModal({ update, onClose }: UpdateModalProps) {
           <div className="space-y-4">
             {downloading && (
               <div className="space-y-2">
-                <div className="flex justify-between text-xs font-medium text-foreground">
-                  <span>Downloading update...</span>
+              <div className="flex justify-between text-xs font-medium text-foreground">
+                  <span>{update.kind === 'android' ? 'Opening Android installer...' : 'Downloading update...'}</span>
                   <span>{progress}%</span>
                 </div>
-                <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
-                  <div className="h-full bg-primary transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
-                </div>
+                {update.kind === 'desktop' ? (
+                  <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
+                    <div className="h-full bg-primary transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
+                  </div>
+                ) : null}
               </div>
             )}
             
@@ -102,9 +120,14 @@ export function UpdateModal({ update, onClose }: UpdateModalProps) {
                 Remind Me Later
               </Button>
               <Button onClick={startUpdate} disabled={downloading} className="flex-1 shadow-lg shadow-primary/20">
-                {downloading ? <Loader2 className="animate-spin" size={18} /> : 'Download & Install'}
+                {downloading ? <Loader2 className="animate-spin" size={18} /> : update.kind === 'android' ? 'Download APK' : 'Download & Install'}
               </Button>
             </div>
+            {isNativeAndroidApp() && update.kind === 'android' ? (
+              <p className="text-xs text-muted-foreground text-center">
+                Android will open the system installer after the APK download starts. If asked, allow installs from this source.
+              </p>
+            ) : null}
           </div>
         )}
       </div>

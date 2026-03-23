@@ -1,25 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Cross-platform capability for the main window",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
-    "core:window:allow-minimize",
-    "core:window:allow-maximize",
-    "core:window:allow-show",
-    "core:window:allow-set-focus",
-    "core:window:allow-unmaximize",
-    "core:window:allow-unminimize",
-    "core:window:allow-is-visible",
-    "core:window:allow-is-minimized",
-    "core:window:allow-close",
     "opener:default",
-    "notification:default",
-    "updater:default",
-    "process:default",
-    "autostart:default"
+    "notification:default"
   ]
 }

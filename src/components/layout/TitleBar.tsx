@@ -1,9 +1,14 @@
 import { Minus, Square, X, RefreshCw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useUpdate } from '../../contexts/UpdateContext';
+import { isDesktopChromeAvailable } from '../../lib/runtime';
 
 export function TitleBar() {
   const { checkForUpdates, isChecking } = useUpdate();
+
+  if (!isDesktopChromeAvailable()) {
+    return null;
+  }
 
   const handleMinimize = async () => {
     try { await getCurrentWindow().minimize(); } catch (e) { console.error("minimize failed", e); }

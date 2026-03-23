@@ -12,6 +12,7 @@ import { Notifications } from "./pages/Notifications";
 import { Friends } from "./pages/Friends";
 import { Settings } from "./pages/Settings";
 import { MessageSquare } from "lucide-react";
+import { isDesktopChromeAvailable } from "./lib/runtime";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuth();
@@ -51,7 +52,9 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 
 function App() {
   useEffect(() => {
-    void applyAutostartPreferenceOnLaunch();
+    if (isDesktopChromeAvailable()) {
+      void applyAutostartPreferenceOnLaunch();
+    }
   }, []);
 
   return (
