@@ -31,6 +31,7 @@ import {
   Send,
   Settings,
   Smile,
+  Sticker,
   Trash2,
   Image as ImageIcon,
   X,
@@ -43,6 +44,7 @@ import { Button } from '../ui/button';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { GifPicker } from './GifPicker';
+import { StickerPicker } from './StickerPicker';
 import { GroupManageModal } from './GroupManageModal';
 import { SpoilerChatImage } from './SpoilerChatImage';
 import { TypingDots } from './TypingDots';
@@ -153,6 +155,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
+  const [stickerOpen, setStickerOpen] = useState(false);
   const [sendingMedia, setSendingMedia] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
   const [otherUser, setOtherUser] = useState<any>(null);
@@ -432,11 +435,14 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               );
             }
             if (media.spoiler) return <SpoilerChatImage src={media.url} />;
+            const isSticker = media.url.includes('/stickers/');
             return (
               <img
                 src={media.url}
                 alt="Media message"
-                className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
+                className={isSticker
+                  ? "max-w-[128px] max-h-[128px] object-contain rounded-xl"
+                  : "w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"}
                 draggable={false}
               />
             );
@@ -448,11 +454,14 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     const topMedia = parseChatMediaPayload(content);
     if (topMedia) {
       if (topMedia.spoiler) return <SpoilerChatImage src={topMedia.url} />;
+      const isSticker = topMedia.url.includes('/stickers/');
       return (
         <img
           src={topMedia.url}
           alt="Media message"
-          className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
+          className={isSticker
+            ? "max-w-[128px] max-h-[128px] object-contain rounded-xl"
+            : "w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"}
           draggable={false}
         />
       );
@@ -2182,6 +2191,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               onClick={() => {
                 if (!canToggleGif) return;
                 setEmojiOpen(false);
+                setStickerOpen(false);
                 setGifOpen((v) => !v);
               }}
               className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
@@ -2196,6 +2206,32 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   onClose={() => setGifOpen(false)}
                   onSelect={(gifUrl) => {
                     void sendMediaMessage(gifUrl).finally(() => setGifOpen(false));
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="relative block">
+            <button
+              type="button"
+              onClick={() => {
+                setEmojiOpen(false);
+                setGifOpen(false);
+                setStickerOpen((v) => !v);
+              }}
+              className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors shrink-0"
+              aria-label="Stickers"
+              disabled={!user || sendingMedia || editingMessageId !== null}
+            >
+              <Sticker size={18} />
+            </button>
+            {stickerOpen && (
+              <div className="absolute bottom-full right-0 mb-3 z-50">
+                <StickerPicker
+                  onClose={() => setStickerOpen(false)}
+                  onSelect={(url) => {
+                    void sendMediaMessage(url).finally(() => setStickerOpen(false));
                   }}
                 />
               </div>
