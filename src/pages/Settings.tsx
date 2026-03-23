@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
 import { ProfileEditModal } from '../components/chat/ProfileEditModal';
 import { Button } from '../components/ui/button';
-import { User, Bell, Shield, Moon, Monitor, Palette, Power } from 'lucide-react';
+import { User, Bell, Shield, Moon, Monitor, Palette, Power, RefreshCw } from 'lucide-react';
 import { Avatar } from '../components/ui/avatar';
 import { motion } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,6 +12,7 @@ import {
   readAutostartEnabledFromOs,
   setAutostartEnabled,
 } from '../lib/autostart';
+import { useUpdate } from '../contexts/UpdateContext';
 import { isDesktopChromeAvailable } from '../lib/runtime';
 
 export function Settings() {
@@ -19,6 +20,7 @@ export function Settings() {
   const [autostart, setAutostart] = useState(() => getAutostartPreference());
   const [autostartBusy, setAutostartBusy] = useState(false);
   const { profile, signOut } = useAuth();
+  const { checkForUpdates, isChecking } = useUpdate();
   const showDesktopAutostart = isDesktopChromeAvailable();
 
   useEffect(() => {
@@ -138,6 +140,17 @@ export function Settings() {
                 <div className="w-11 h-6 bg-primary rounded-full relative cursor-pointer shadow-inner">
                   <div className="absolute right-1 top-1 w-4 h-4 bg-white rounded-full transition-all shadow-sm" />
                 </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
+                <div>
+                  <h4 className="font-medium text-foreground flex items-center gap-2"><RefreshCw size={16} className="text-muted-foreground"/> Updates</h4>
+                  <p className="text-sm text-muted-foreground mt-0.5">Check for the latest DogitoChat version{showDesktopAutostart ? '' : ' and download the newest Android APK'}.</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" className="bg-background gap-2" onClick={() => void checkForUpdates()} disabled={isChecking}>
+                  <RefreshCw size={14} className={isChecking ? 'animate-spin' : ''} />
+                  {isChecking ? 'Checking...' : 'Check for updates'}
+                </Button>
               </div>
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">

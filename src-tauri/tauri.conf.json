@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "prueba",
-  "version": "1.2.17",
+  "version": "1.2.19",
   "identifier": "com.jesus.prueba",
   "build": {
     "beforeDevCommand": "npm run dev",
