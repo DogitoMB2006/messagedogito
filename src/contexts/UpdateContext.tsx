@@ -36,9 +36,12 @@ export type AppUpdate =
 const UpdateContext = createContext<UpdateContextType | undefined>(undefined);
 
 // Check frequently so newly published releases appear quickly.
-const CHECK_INTERVAL_MS = 2 * 60 * 1000;
-const STARTUP_CHECK_DELAY_MS = 5000;
-const STARTUP_FOLLOW_UP_DELAY_MS = 45000;
+const DESKTOP_CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const ANDROID_CHECK_INTERVAL_MS = 60 * 1000;
+const DESKTOP_STARTUP_CHECK_DELAY_MS = 5000;
+const ANDROID_STARTUP_CHECK_DELAY_MS = 2500;
+const DESKTOP_STARTUP_FOLLOW_UP_DELAY_MS = 45000;
+const ANDROID_STARTUP_FOLLOW_UP_DELAY_MS = 15000;
 const FOREGROUND_RECHECK_COOLDOWN_MS = 45 * 1000;
 const DISMISSED_UPDATE_VERSION_KEY = 'dogito.dismissedUpdateVersion';
 
@@ -269,17 +272,22 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
   // Background polling
   useEffect(() => {
+    const isAndroid = isNativeAndroidApp();
+    const startupCheckDelayMs = isAndroid ? ANDROID_STARTUP_CHECK_DELAY_MS : DESKTOP_STARTUP_CHECK_DELAY_MS;
+    const startupFollowUpDelayMs = isAndroid ? ANDROID_STARTUP_FOLLOW_UP_DELAY_MS : DESKTOP_STARTUP_FOLLOW_UP_DELAY_MS;
+    const checkIntervalMs = isAndroid ? ANDROID_CHECK_INTERVAL_MS : DESKTOP_CHECK_INTERVAL_MS;
+
     const initial = setTimeout(() => {
       void runSilentUpdateCheck(true);
-    }, STARTUP_CHECK_DELAY_MS);
+    }, startupCheckDelayMs);
 
     const followUp = setTimeout(() => {
       void runSilentUpdateCheck(true);
-    }, STARTUP_FOLLOW_UP_DELAY_MS);
+    }, startupFollowUpDelayMs);
 
     intervalRef.current = setInterval(() => {
       void runSilentUpdateCheck(true);
-    }, CHECK_INTERVAL_MS);
+    }, checkIntervalMs);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -295,17 +303,29 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       void runSilentUpdateCheck(true);
     };
 
+    const handlePageShow = () => {
+      void runSilentUpdateCheck(true);
+    };
+
+    const handleResume = () => {
+      void runSilentUpdateCheck(true);
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('resume', handleResume as EventListener);
     window.addEventListener('focus', handleWindowFocus);
     window.addEventListener('online', handleOnline);
+    window.addEventListener('pageshow', handlePageShow);
 
     return () => {
       clearTimeout(initial);
       clearTimeout(followUp);
       if (intervalRef.current) clearInterval(intervalRef.current);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('resume', handleResume as EventListener);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('online', handleOnline);
+      window.removeEventListener('pageshow', handlePageShow);
       clearStatusTimeout();
     };
   }, [clearStatusTimeout, runSilentUpdateCheck]);

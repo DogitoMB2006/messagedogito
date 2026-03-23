@@ -40,8 +40,9 @@ export function isVersionNewer(nextVersion: string, currentVersion: string): boo
 }
 
 export async function checkAndroidReleaseUpdate(currentVersion: string): Promise<AndroidReleaseUpdate | null> {
-  const response = await fetch('https://github.com/DogitoMB2006/messagedogito/releases/latest/download/android-latest.json', {
+  const response = await fetch(`https://github.com/DogitoMB2006/messagedogito/releases/latest/download/android-latest.json?t=${Date.now()}`, {
     headers: { Accept: 'application/json' },
+    cache: 'no-store',
   });
 
   if (response.status === 404 || response.status === 204) {
