@@ -10,7 +10,24 @@ function ensureImport(text, line) {
 
 let rootGradle = readFileSync(rootGradlePath, 'utf8');
 if (!rootGradle.includes('com.google.gms:google-services:4.4.2')) {
-  rootGradle += `
+  if (rootGradle.includes('buildscript {')) {
+    rootGradle = rootGradle.replace(
+      /buildscript\s*\{([\s\S]*?)dependencies\s*\{([\s\S]*?)\n\s*}\s*\}/m,
+      (match, buildscriptBody, dependencyBody) => {
+        if (dependencyBody.includes('com.google.gms:google-services:4.4.2')) {
+          return match;
+        }
+
+        return match.replace(
+          /dependencies\s*\{([\s\S]*?)\n\s*}/m,
+          `dependencies {${dependencyBody}
+        classpath("com.google.gms:google-services:4.4.2")
+    }`,
+        );
+      },
+    );
+  } else {
+    rootGradle += `
 
 buildscript {
     repositories {
@@ -22,6 +39,7 @@ buildscript {
     }
 }
 `;
+  }
 }
 writeFileSync(rootGradlePath, rootGradle);
 
