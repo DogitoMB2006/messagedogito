@@ -4,9 +4,20 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      android_only:
+        description: 'Only build/upload the Android APK to an existing release tag'
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: 'Existing release tag to upload the APK to when android_only is enabled'
+        required: false
+        type: string
 
 jobs:
   release-desktop:
+    if: github.event_name != 'workflow_dispatch' || inputs.android_only != true
     outputs:
       releaseId: ${{ steps.desktop_tauri.outputs.releaseId }}
       appVersion: ${{ steps.desktop_tauri.outputs.appVersion }}
@@ -62,6 +73,7 @@ jobs:
 
   release-android:
     needs: release-desktop
+    if: github.event_name != 'workflow_dispatch' || inputs.android_only != true
     permissions:
       contents: write
     runs-on: ubuntu-22.04
@@ -112,7 +124,6 @@ jobs:
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
       - name: build android apk
-        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -122,22 +133,111 @@ jobs:
           VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
           VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
           VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
-        with:
-          releaseId: ${{ needs.release-desktop.outputs.releaseId }}
-          tagName: ${{ github.ref_name }}
-          mobile: android
-          args: --apk
-          uploadUpdaterJson: false
-          releaseAssetNamePattern: '[name]_[version]_[platform]_[arch][ext]'
+        run: npx tauri android build --apk
 
-      - name: create android latest manifest
+      - name: upload android apk
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          APK_URL=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+          APK_PATH=$(find src-tauri/gen/android -path '*release*.apk' | head -n 1)
+          test -n "$APK_PATH"
+          gh release upload ${{ github.ref_name }} "$APK_PATH" --clobber
+
+      - name: create android latest manifest
+        run: |
+          APK_PATH=$(find src-tauri/gen/android -path '*release*.apk' | head -n 1)
+          APK_FILE=$(basename "$APK_PATH")
+          APK_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$APK_FILE"
           node scripts/create-android-latest-manifest.mjs ${{ needs.release-desktop.outputs.appVersion }} "$APK_URL" "Download the latest DogitoChat Android APK from this release."
 
       - name: upload android latest manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload ${{ github.ref_name }} android-latest.json --clobber
+
+  release-android-only:
+    if: github.event_name == 'workflow_dispatch' && inputs.android_only == true
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ensure release tag input exists
+        run: test -n "${{ inputs.release_tag }}"
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: setup java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: setup android sdk
+        uses: android-actions/setup-android@v3
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      - name: init tauri android project
+        run: npm run tauri android init
+
+      - name: patch android project
+        run: node scripts/patch-android-project.mjs
+
+      - name: write firebase config
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON" > src-tauri/gen/android/app/google-services.json
+
+      - name: setup Android signing
+        run: |
+          cd src-tauri/gen/android
+          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
+          echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
+          base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/keystore.jks"
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+
+      - name: build android apk
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GIPHY_API_KEY: ${{ secrets.VITE_GIPHY_API_KEY }}
+          VITE_STUN_URLS: ${{ secrets.VITE_STUN_URLS }}
+          VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
+        run: npx tauri android build --apk
+
+      - name: upload android apk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK_PATH=$(find src-tauri/gen/android -path '*release*.apk' | head -n 1)
+          test -n "$APK_PATH"
+          gh release upload ${{ inputs.release_tag }} "$APK_PATH" --clobber
+
+      - name: create android latest manifest
+        run: |
+          APK_PATH=$(find src-tauri/gen/android -path '*release*.apk' | head -n 1)
+          APK_FILE=$(basename "$APK_PATH")
+          APK_URL="https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/$APK_FILE"
+          VERSION="${{ inputs.release_tag }}"
+          VERSION=${VERSION#v}
+          node scripts/create-android-latest-manifest.mjs "$VERSION" "$APK_URL" "Download the latest DogitoChat Android APK from this release."
+
+      - name: upload android latest manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ inputs.release_tag }} android-latest.json --clobber
