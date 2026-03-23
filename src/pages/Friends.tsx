@@ -243,7 +243,7 @@ export function Friends() {
 
   return (
     <MainLayout>
-      <div className="flex flex-col h-full max-w-4xl mx-auto p-4 md:p-8">
+      <div className="flex flex-col min-h-full max-w-4xl mx-auto p-4 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] md:p-8 md:pb-8">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-foreground">Friends</h1>
