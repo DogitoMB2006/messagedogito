@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Search, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -6,6 +6,8 @@ type GifPickerProps = {
   onSelect: (gifUrl: string) => void;
   onClose: () => void;
   className?: string;
+  /** Focus search after mount (e.g. desktop popover). */
+  autoFocusSearch?: boolean;
 };
 
 function pickGifThumbUrl(gif: any): string | null {
@@ -18,7 +20,8 @@ function pickGifSendUrl(gif: any): string | null {
   return gif?.images?.fixed_height?.url || gif?.images?.downsized_medium?.url || gif?.images?.original?.url || null;
 }
 
-export function GifPicker({ onSelect, onClose, className }: GifPickerProps) {
+export function GifPicker({ onSelect, onClose, className, autoFocusSearch }: GifPickerProps) {
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any[]>([]);
@@ -64,6 +67,12 @@ export function GifPicker({ onSelect, onClose, className }: GifPickerProps) {
     return () => controller.abort();
   }, [apiKey, query]);
 
+  useEffect(() => {
+    if (!autoFocusSearch) return;
+    const id = requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [autoFocusSearch]);
+
   return (
     <div
       className={cn(
@@ -75,6 +84,7 @@ export function GifPicker({ onSelect, onClose, className }: GifPickerProps) {
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <Search size={16} className="text-muted-foreground shrink-0" />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search GIFs…"

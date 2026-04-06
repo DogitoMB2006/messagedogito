@@ -2,9 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { Modal } from '../ui/modal';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
+import { ImageCropModal } from '../ui/ImageCropModal';
 import { Camera, Loader2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
+
+/** Revoke after the next paint so the new `<img src>` can load before the old blob URL dies (avoids black/broken flash). */
+function revokeObjectUrlAfterPaint(url: string | null | undefined) {
+  if (!url?.startsWith('blob:')) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => URL.revokeObjectURL(url));
+  });
+}
+
+type CropJob = { type: 'avatar' | 'banner'; src: string; mimeType: string };
 
 interface ProfileEditModalProps {
   isOpen: boolean;
@@ -21,7 +32,8 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
   const [bannerFile, setBannerFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [bannerPreview, setBannerPreview] = useState<string | null>(null);
-  
+  const [cropJob, setCropJob] = useState<CropJob | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,19 +46,55 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
       setBannerPreview(profile.banner_url);
       setAvatarFile(null);
       setBannerFile(null);
+      setCropJob((prev) => {
+        if (prev) URL.revokeObjectURL(prev.src);
+        return null;
+      });
     }
   }, [profile, isOpen]);
 
+  useEffect(() => {
+    if (!isOpen && cropJob) {
+      URL.revokeObjectURL(cropJob.src);
+      setCropJob(null);
+    }
+  }, [isOpen, cropJob]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'avatar' | 'banner') => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      if (type === 'avatar') {
-        setAvatarFile(file);
-        setAvatarPreview(URL.createObjectURL(file));
-      } else {
-        setBannerFile(file);
-        setBannerPreview(URL.createObjectURL(file));
-      }
+    const input = e.target;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setCropJob({ type, src: url, mimeType: file.type || 'application/octet-stream' });
+  };
+
+  const dismissCrop = () => {
+    if (cropJob) URL.revokeObjectURL(cropJob.src);
+    setCropJob(null);
+  };
+
+  const applyCroppedImage = async (blob: Blob) => {
+    if (!cropJob) return;
+    const isAvatar = cropJob.type === 'avatar';
+    const mime = blob.type || 'image/jpeg';
+    const ext =
+      mime === 'image/gif' ? 'gif' : mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+    const fileName = isAvatar ? `avatar.${ext}` : `banner.${ext}`;
+    const file = new File([blob], fileName, { type: mime });
+    URL.revokeObjectURL(cropJob.src);
+    setCropJob(null);
+    const nextPreview = URL.createObjectURL(file);
+    if (isAvatar) {
+      const prev = avatarPreview;
+      setAvatarFile(file);
+      setAvatarPreview(nextPreview);
+      revokeObjectUrlAfterPaint(prev);
+    } else {
+      const prev = bannerPreview;
+      setBannerFile(file);
+      setBannerPreview(nextPreview);
+      revokeObjectUrlAfterPaint(prev);
     }
   };
 
@@ -116,12 +164,28 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
   };
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Edit profile"
-      description="Update how you appear to friends and in groups."
-    >
+    <>
+      <ImageCropModal
+        isOpen={cropJob !== null}
+        imageSrc={cropJob?.src ?? ''}
+        sourceMimeType={cropJob?.mimeType}
+        aspect={cropJob?.type === 'banner' ? 16 / 5 : 1}
+        cropShape={cropJob?.type === 'banner' ? 'rect' : 'round'}
+        title={cropJob?.type === 'banner' ? 'Crop banner' : 'Crop profile photo'}
+        description={
+          cropJob?.type === 'banner'
+            ? 'Drag and zoom, then confirm to use this banner.'
+            : 'Drag and zoom to frame your photo, then confirm.'
+        }
+        onClose={dismissCrop}
+        onConfirm={applyCroppedImage}
+      />
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Edit profile"
+        description="Update how you appear to friends and in groups."
+      >
       <form onSubmit={handleSave} className="space-y-6">
         {error && (
           <div className="bg-red-500/10 text-red-500 text-sm p-3 rounded-md border border-red-500/20">
@@ -132,7 +196,13 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
         {/* Banner Edit */}
         <div className="relative h-32 w-full bg-secondary/50 rounded-xl overflow-hidden group border border-border/30">
            {bannerPreview ? (
-             <img src={bannerPreview} alt="Banner" className="w-full h-full object-cover" />
+             <img
+               src={bannerPreview}
+               alt="Banner"
+               className="w-full h-full object-cover bg-secondary/40"
+               decoding={bannerPreview.startsWith('blob:') ? 'sync' : 'async'}
+               draggable={false}
+             />
            ) : (
              <div className="w-full h-full bg-gradient-to-tr from-primary/20 to-accent/20" />
            )}
@@ -147,7 +217,13 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
           <div className="relative group inline-block">
             <div className="h-20 w-20 rounded-full bg-secondary border-4 border-background shadow-lg overflow-hidden flex items-center justify-center relative">
               {avatarPreview ? (
-                <img src={avatarPreview} alt="Avatar" className="w-full h-full object-cover" />
+                <img
+                  src={avatarPreview}
+                  alt="Avatar"
+                  className="w-full h-full object-cover bg-secondary/40"
+                  decoding={avatarPreview.startsWith('blob:') ? 'sync' : 'async'}
+                  draggable={false}
+                />
               ) : (
                 <span className="text-xl font-bold text-muted-foreground">{profile?.display_name?.slice(0, 2).toUpperCase() || 'MY'}</span>
               )}
@@ -198,6 +274,7 @@ export function ProfileEditModal({ isOpen, onClose }: ProfileEditModalProps) {
           </Button>
         </div>
       </form>
-    </Modal>
+      </Modal>
+    </>
   );
 }

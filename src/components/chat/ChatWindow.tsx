@@ -135,6 +135,20 @@ function mergeSilentServerMessages(prev: any[], server: any[] | null | undefined
   );
 }
 
+type DesktopComposerPopoverRect = { right: number; bottom: number; width: number; maxHeight: number };
+
+/** Anchors above the composer button; rendered in a body portal so `overflow:hidden` on the chat column does not clip the popover (search row was cut off on desktop). */
+function desktopComposerPopoverRect(anchor: DOMRectReadOnly, widthCapPx: number): DesktopComposerPopoverRect {
+  const width = Math.min(widthCapPx, window.innerWidth - 24);
+  const maxHeight = Math.min(Math.floor(window.innerHeight * 0.72), 520);
+  return {
+    right: Math.max(12, window.innerWidth - anchor.right),
+    bottom: window.innerHeight - anchor.top + 12,
+    width,
+    maxHeight,
+  };
+}
+
 export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onPeekUser }: ChatWindowProps) {
   const { user, profile } = useAuth();
   const {
@@ -875,11 +889,42 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
   const isMobileComposer = useMediaQuery('(max-width: 639px)');
   const [pickerLayoutTick, setPickerLayoutTick] = useState(0);
+  const [gifDesktopRect, setGifDesktopRect] = useState<DesktopComposerPopoverRect | null>(null);
+  const [emojiDesktopRect, setEmojiDesktopRect] = useState<DesktopComposerPopoverRect | null>(null);
+  const [stickerDesktopRect, setStickerDesktopRect] = useState<DesktopComposerPopoverRect | null>(null);
   useEffect(() => {
     const onResize = () => setPickerLayoutTick((n) => n + 1);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  useLayoutEffect(() => {
+    const update = () => {
+      if (isMobileComposer) {
+        setGifDesktopRect(null);
+        setEmojiDesktopRect(null);
+        setStickerDesktopRect(null);
+        return;
+      }
+      if (gifOpen && gifPickerWrapperRef.current) {
+        setGifDesktopRect(desktopComposerPopoverRect(gifPickerWrapperRef.current.getBoundingClientRect(), 420));
+      } else setGifDesktopRect(null);
+
+      if (emojiOpen && emojiPickerWrapperRef.current) {
+        setEmojiDesktopRect(desktopComposerPopoverRect(emojiPickerWrapperRef.current.getBoundingClientRect(), 340));
+      } else setEmojiDesktopRect(null);
+
+      if (stickerOpen && stickerPickerWrapperRef.current) {
+        setStickerDesktopRect(desktopComposerPopoverRect(stickerPickerWrapperRef.current.getBoundingClientRect(), 320));
+      } else setStickerDesktopRect(null);
+    };
+
+    update();
+    if (isMobileComposer) return;
+
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [gifOpen, emojiOpen, stickerOpen, isMobileComposer, pickerLayoutTick]);
 
   useEffect(() => {
     if (!emojiOpen && !gifOpen && !stickerOpen) return;
@@ -888,6 +933,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       const target = e.target as HTMLElement | null;
       if (!target) return;
       if (target.closest('[data-composer-picker-portal]')) return;
+      if (target.closest('[data-composer-popover]')) return;
       if (emojiPickerWrapperRef.current?.contains(target)) return;
       if (gifPickerWrapperRef.current?.contains(target)) return;
       if (stickerPickerWrapperRef.current?.contains(target)) return;
@@ -1511,11 +1557,6 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
   const canToggleGif = useMemo(() => !disableComposer, [disableComposer]);
   const canToggleEmoji = useMemo(() => !disableComposer && !hasSelectedImage, [disableComposer, hasSelectedImage]);
-  const emojiPickerWidth = useMemo(() => {
-    if (typeof window === 'undefined') return 320;
-    return Math.min(window.innerWidth - 24, 340);
-  }, [pickerLayoutTick]);
-
   const mobileEmojiPickerWidth = useMemo(() => {
     if (typeof window === 'undefined') return 340;
     return Math.min(400, window.innerWidth - 48);
@@ -2337,21 +2378,33 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 />
               </div>
             </ComposerPickerSheet>
-            {emojiOpen && !isMobileComposer ? (
-              <div className="pointer-events-auto absolute bottom-full right-0 z-50 mb-3 w-[min(340px,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]">
-                <EmojiPicker
-                  theme={Theme.DARK}
-                  height={360}
-                  width={emojiPickerWidth}
-                  searchDisabled={false}
-                  skinTonesDisabled={false}
-                  previewConfig={{ showPreview: false }}
-                  onEmojiClick={(emojiData) => {
-                    handleEmojiPicked(emojiData.emoji);
-                  }}
-                />
-              </div>
-            ) : null}
+            {emojiOpen && !isMobileComposer && emojiDesktopRect
+              ? createPortal(
+                  <div
+                    data-composer-popover
+                    className="pointer-events-auto fixed z-[100] flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-background/98 shadow-2xl backdrop-blur-xl"
+                    style={{
+                      right: emojiDesktopRect.right,
+                      bottom: emojiDesktopRect.bottom,
+                      width: emojiDesktopRect.width,
+                      maxHeight: emojiDesktopRect.maxHeight,
+                    }}
+                  >
+                    <EmojiPicker
+                      theme={Theme.DARK}
+                      height={Math.min(360, emojiDesktopRect.maxHeight)}
+                      width={emojiDesktopRect.width}
+                      searchDisabled={false}
+                      skinTonesDisabled={false}
+                      previewConfig={{ showPreview: false }}
+                      onEmojiClick={(emojiData) => {
+                        handleEmojiPicked(emojiData.emoji);
+                      }}
+                    />
+                  </div>,
+                  document.body,
+                )
+              : null}
           </div>
 
           <div ref={gifPickerWrapperRef} className="relative block shrink-0">
@@ -2378,16 +2431,30 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 }}
               />
             </ComposerPickerSheet>
-            {gifOpen && !isMobileComposer ? (
-              <div className="pointer-events-auto absolute bottom-full right-0 z-50 mb-3 w-[min(calc(100vw-1.5rem),420px)] max-w-[420px]">
-                <GifPicker
-                  onClose={() => setGifOpen(false)}
-                  onSelect={(gifUrl) => {
-                    void sendMediaMessage(gifUrl).finally(() => setGifOpen(false));
-                  }}
-                />
-              </div>
-            ) : null}
+            {gifOpen && !isMobileComposer && gifDesktopRect
+              ? createPortal(
+                  <div
+                    data-composer-popover
+                    className="pointer-events-auto fixed z-[100] flex min-h-0 max-h-full flex-col"
+                    style={{
+                      right: gifDesktopRect.right,
+                      bottom: gifDesktopRect.bottom,
+                      width: gifDesktopRect.width,
+                      maxHeight: gifDesktopRect.maxHeight,
+                    }}
+                  >
+                    <GifPicker
+                      autoFocusSearch
+                      className="min-h-0 min-w-0 flex-1 max-h-full rounded-2xl"
+                      onClose={() => setGifOpen(false)}
+                      onSelect={(gifUrl) => {
+                        void sendMediaMessage(gifUrl).finally(() => setGifOpen(false));
+                      }}
+                    />
+                  </div>,
+                  document.body,
+                )
+              : null}
           </div>
 
           <div ref={stickerPickerWrapperRef} className="relative block shrink-0">
@@ -2413,16 +2480,29 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 }}
               />
             </ComposerPickerSheet>
-            {stickerOpen && !isMobileComposer ? (
-              <div className="pointer-events-auto absolute bottom-full right-0 z-50 mb-3 w-[min(320px,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]">
-                <StickerPicker
-                  onClose={() => setStickerOpen(false)}
-                  onSelect={(url) => {
-                    void sendMediaMessage(url).finally(() => setStickerOpen(false));
-                  }}
-                />
-              </div>
-            ) : null}
+            {stickerOpen && !isMobileComposer && stickerDesktopRect
+              ? createPortal(
+                  <div
+                    data-composer-popover
+                    className="pointer-events-auto fixed z-[100] flex min-h-0 max-h-full flex-col"
+                    style={{
+                      right: stickerDesktopRect.right,
+                      bottom: stickerDesktopRect.bottom,
+                      width: stickerDesktopRect.width,
+                      maxHeight: stickerDesktopRect.maxHeight,
+                    }}
+                  >
+                    <StickerPicker
+                      className="min-h-0 min-w-0 flex-1 max-h-full rounded-2xl"
+                      onClose={() => setStickerOpen(false)}
+                      onSelect={(url) => {
+                        void sendMediaMessage(url).finally(() => setStickerOpen(false));
+                      }}
+                    />
+                  </div>,
+                  document.body,
+                )
+              : null}
           </div>
 
           <button

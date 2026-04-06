@@ -18,9 +18,26 @@ interface ModalProps {
   children: React.ReactNode;
   className?: string;
   size?: keyof typeof sizeClass;
+  /** Merged onto the fixed full-screen root (e.g. z-index when stacking modals) */
+  rootClassName?: string;
+  /**
+   * `fade` = opacity only. Use for content that measures layout on open (e.g. react-easy-crop);
+   * scale motion breaks cropper math and causes GIFs to flicker or show black frames.
+   */
+  panelMotion?: 'default' | 'fade';
 }
 
-export function Modal({ isOpen, onClose, title, description, children, className, size = 'md' }: ModalProps) {
+export function Modal({
+  isOpen,
+  onClose,
+  title,
+  description,
+  children,
+  className,
+  size = 'md',
+  rootClassName,
+  panelMotion = 'default',
+}: ModalProps) {
   React.useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
@@ -35,7 +52,7 @@ export function Modal({ isOpen, onClose, title, description, children, className
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+        <div className={cn('fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6', rootClassName)}>
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -46,10 +63,22 @@ export function Modal({ isOpen, onClose, title, description, children, className
             onClick={onClose}
           />
           <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: 12 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 12 }}
-            transition={{ duration: 0.28, type: 'spring', damping: 26, stiffness: 320 }}
+            initial={
+              panelMotion === 'fade'
+                ? { opacity: 0 }
+                : { opacity: 0, scale: 0.96, y: 12 }
+            }
+            animate={panelMotion === 'fade' ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+            exit={
+              panelMotion === 'fade'
+                ? { opacity: 0 }
+                : { opacity: 0, scale: 0.96, y: 12 }
+            }
+            transition={
+              panelMotion === 'fade'
+                ? { duration: 0.2 }
+                : { duration: 0.28, type: 'spring', damping: 26, stiffness: 320 }
+            }
             role="dialog"
             aria-modal="true"
             aria-labelledby={title ? 'modal-title' : undefined}
