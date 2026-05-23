@@ -8,7 +8,11 @@ import { dispatchMessageRowInserted, dispatchMessageRowUpdated } from '../lib/me
 import { getHashPathname } from '../lib/hashRouterLocation';
 import { splitLeadingReply, getNotificationMessageBody, isChatMediaUrl } from '../lib/replyMessageFormat';
 import { isPermissionGranted, requestPermission, sendNotification } from '../lib/notifications';
-import { arePresenceNotificationsSilenced, runPresenceOfflineBeforeSignOut } from '../lib/presenceNotifyGate';
+import {
+  areDesktopNotificationsEnabled,
+  arePresenceNotificationsSilenced,
+  runPresenceOfflineBeforeSignOut,
+} from '../lib/presenceNotifyGate';
 import {
   ensureAndroidPushRegistration,
   unregisterAndroidPushDevice,
@@ -263,6 +267,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         try {
           if (!permissionGranted) return;
+          if (!areDesktopNotificationsEnabled()) return;
           if (arePresenceNotificationsSilenced()) return;
 
           const content = row.content;
@@ -361,7 +366,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
          if (isAppFocused && isOnNotifRoute) return;
 
          try {
-           if (permissionGranted && !arePresenceNotificationsSilenced()) {
+           if (permissionGranted && areDesktopNotificationsEnabled() && !arePresenceNotificationsSilenced()) {
              sendNotification({ title: 'New Friend Request! 🥳', body: 'Someone wants to connect with you.' });
            }
          } catch (e) {}

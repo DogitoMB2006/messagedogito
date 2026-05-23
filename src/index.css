@@ -14,6 +14,20 @@
   --color-border: #27272a;
 }
 
+:root.light {
+  --color-background: #ffffff;
+  --color-foreground: #09090b;
+  --color-primary: #2563eb;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f4f4f5;
+  --color-secondary-foreground: #09090b;
+  --color-muted: #f4f4f5;
+  --color-muted-foreground: #71717a;
+  --color-accent: #f4f4f5;
+  --color-accent-foreground: #09090b;
+  --color-border: #e4e4e7;
+}
+
 @layer base {
   * {
     border-color: var(--color-border);
@@ -23,6 +37,13 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
     @apply antialiased;
+    -webkit-tap-highlight-color: transparent;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Smooth scrolling on supported platforms */
+  html {
+    scroll-behavior: smooth;
   }
 }
 
@@ -35,15 +56,19 @@
   -webkit-app-region: no-drag;
 }
 
-/* Themed scrollbar used across chat surfaces */
+/* ── Scrollbar ── */
 .custom-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: rgba(59, 130, 246, 0.45) rgba(39, 39, 42, 0.25);
 }
 
+:root.light .custom-scrollbar {
+  scrollbar-color: rgba(37, 99, 235, 0.45) rgba(228, 228, 231, 0.5);
+}
+
 .custom-scrollbar::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -51,20 +76,134 @@
   border-radius: 999px;
 }
 
+:root.light .custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(228, 228, 231, 0.5);
+}
+
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background: linear-gradient(180deg, rgba(59, 130, 246, 0.55), rgba(59, 130, 246, 0.35));
   border-radius: 999px;
-  border: 2px solid rgba(39, 39, 42, 0.35);
+  border: 1px solid rgba(39, 39, 42, 0.35);
+}
+
+:root.light .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.55), rgba(37, 99, 235, 0.35));
+  border: 1px solid rgba(228, 228, 231, 0.5);
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.75), rgba(59, 130, 246, 0.5));
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.78), rgba(59, 130, 246, 0.55));
 }
 
+:root.light .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.78), rgba(37, 99, 235, 0.58));
+}
+
+/* ── Emoji rendering ── */
 .emoji-render img.emoji {
   height: 1.15em;
   width: 1.15em;
   margin: 0 0.04em;
   vertical-align: -0.2em;
   display: inline-block;
+}
+
+/* ── Chat message list: GPU compositing + momentum scroll ── */
+.chat-messages-scroll {
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  will-change: scroll-position;
+  contain: strict;
+}
+
+/* ── Reply bar slide-in animation ── */
+@keyframes reply-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    max-height: 120px;
+  }
+}
+
+.reply-bar-enter {
+  animation: reply-slide-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  overflow: hidden;
+}
+
+/* ── Swipe message row: allow pan on mobile ── */
+.msg-swipe-row {
+  touch-action: pan-y;
+}
+
+/* ── Message bubble hover: subtle lift ── */
+@media (hover: hover) {
+  .msg-bubble-hover:hover {
+    filter: brightness(1.04);
+  }
+}
+
+/* ── Smooth button press feedback (icon buttons only) ── */
+.btn-icon:active:not(:disabled) {
+  transform: scale(0.88);
+  transition: transform 0.08s ease;
+}
+
+/* ── Composer focus glow ── */
+.composer-container:focus-within {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35), 0 1px 4px rgba(0,0,0,0.18);
+}
+
+:root.light .composer-container:focus-within {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.3), 0 1px 4px rgba(0,0,0,0.08);
+}
+
+/* ── Spoiler reveal animation ── */
+@keyframes spoiler-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+.spoiler-reveal {
+  animation: spoiler-reveal 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* ── Swipe commit-hint ring — driven by data attribute, zero React state ── */
+[data-swipe-near="true"] .swipe-commit-ring {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.6), 0 6px 18px rgba(59, 130, 246, 0.28);
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+:root.light [data-swipe-near="true"] .swipe-commit-ring {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.55), 0 6px 18px rgba(37, 99, 235, 0.22);
+  border-color: rgba(37, 99, 235, 0.55);
+}
+
+/* ── Context menu pop animation ── */
+@keyframes ctx-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.ctx-menu-enter {
+  animation: ctx-pop 0.16s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  transform-origin: top left;
 }

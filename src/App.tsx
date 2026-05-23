@@ -5,6 +5,8 @@ import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { UpdateProvider } from "./contexts/UpdateContext";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { VoiceCallProvider } from "./contexts/VoiceCallContext";
+import { ThemeProvider } from "./contexts/ThemeContext";
+import { DiamondProvider } from "./contexts/DiamondContext";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Auth/Login";
 import { Register } from "./pages/Auth/Register";
@@ -58,7 +60,9 @@ function App() {
   }, []);
 
   return (
+    <ThemeProvider>
     <AuthProvider>
+      <DiamondProvider>
       <UpdateProvider>
         <PresenceProvider>
         <VoiceCallProvider>
@@ -81,7 +85,9 @@ function App() {
         </VoiceCallProvider>
         </PresenceProvider>
       </UpdateProvider>
+      </DiamondProvider>
     </AuthProvider>
+    </ThemeProvider>
   );
 }
 

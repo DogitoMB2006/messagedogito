@@ -1,5 +1,8 @@
-/** Set by PresenceProvider; read by AuthContext before desktop notifications. */
+/** Set by PresenceProvider when status is busy; read by AuthContext before desktop notifications. */
 let notificationsSilenced = false;
+
+/** Set from user privacy settings (Supabase). Default true until loaded. */
+let desktopNotificationsEnabled = true;
 
 export function setPresenceNotificationsSilenced(silenced: boolean) {
   notificationsSilenced = silenced;
@@ -7,6 +10,14 @@ export function setPresenceNotificationsSilenced(silenced: boolean) {
 
 export function arePresenceNotificationsSilenced(): boolean {
   return notificationsSilenced;
+}
+
+export function setDesktopNotificationsEnabled(enabled: boolean) {
+  desktopNotificationsEnabled = enabled;
+}
+
+export function areDesktopNotificationsEnabled(): boolean {
+  return desktopNotificationsEnabled;
 }
 
 let pushOfflineBeforeSignOut: (() => Promise<void>) | null = null;

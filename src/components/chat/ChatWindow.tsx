@@ -32,6 +32,7 @@ import {
   Send,
   Settings,
   Smile,
+  Sparkles,
   Sticker,
   Trash2,
   Image as ImageIcon,
@@ -46,8 +47,10 @@ import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { GifPicker } from './GifPicker';
 import { StickerPicker } from './StickerPicker';
+import { DecorationShop } from './DecorationShop';
 import { GroupManageModal } from './GroupManageModal';
 import { SpoilerChatImage } from './SpoilerChatImage';
+import { ChatImageLightbox } from './ChatImageLightbox';
 import { ComposerPickerSheet } from './ComposerPickerSheet';
 import { TypingDots } from './TypingDots';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
@@ -69,6 +72,8 @@ import {
 } from '../../lib/messageRowUpdated';
 import { dispatchChatRead, dispatchFriendDmRead, markDmChatRead } from '../../lib/friendDmUnread';
 import { useVoiceCall } from '../../contexts/VoiceCallContext';
+import { useDiamonds } from '../../contexts/DiamondContext';
+import { getDecorationById } from '../../lib/decorations';
 import { whenRealtimeSubscribed } from '../../lib/whenRealtimeSubscribed';
 import { httpBroadcastChatMessages } from '../../lib/chatRealtimeBroadcast';
 import { sendMobilePushNotification } from '../../lib/mobilePush';
@@ -171,6 +176,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     clearError,
   } = useVoiceCall();
   const navigate = useNavigate();
+  const { senderDecorationById, loadDecorationForSenders } = useDiamonds();
   const [message, setMessage] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
@@ -202,6 +208,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imageMarkSpoiler, setImageMarkSpoiler] = useState(false);
+  const [fullscreenImageUrl, setFullscreenImageUrl] = useState<string | null>(null);
   const [pendingExternalUrl, setPendingExternalUrl] = useState<string | null>(null);
   const [replyingToMsg, setReplyingToMsg] = useState<any | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -209,6 +216,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   const [voiceDeviceMenuOpen, setVoiceDeviceMenuOpen] = useState(false);
   const [voiceDeviceMenuPos, setVoiceDeviceMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [dmVoiceStartError, setDmVoiceStartError] = useState<string | null>(null);
+  const [decorShopOpen, setDecorShopOpen] = useState(false);
 
   const messageRef = useRef(message);
   messageRef.current = message;
@@ -243,8 +251,17 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   /** After switching chats, snap scroll to bottom once the thread is shown. */
   const snapToBottomAfterOpenRef = useRef(true);
+  /** Blocks snap until loadChat finishes for the current chatId (avoids snapping stale thread). */
+  const chatSwitchingRef = useRef(false);
+  /** True while we're in the snap-window; ResizeObserver uses this to re-snap as images load. */
+  const snapWindowActiveRef = useRef(false);
+  const snapWindowTimerRef = useRef<number | null>(null);
+  const snapResizeObserverRef = useRef<ResizeObserver | null>(null);
+  /** User is following the latest messages; cleared when they scroll up. */
+  const stickToBottomRef = useRef(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerMirrorRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -272,38 +289,93 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     setGroupExitKind(null);
   }, [chatId]);
 
-  useEffect(() => {
+  const isNearBottom = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return true;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return gap <= SCROLL_LATEST_THRESHOLD_PX;
+  }, []);
+
+  const cancelAutoScrollSnap = useCallback(() => {
+    snapWindowActiveRef.current = false;
+    snapToBottomAfterOpenRef.current = false;
+    snapResizeObserverRef.current?.disconnect();
+    snapResizeObserverRef.current = null;
+    if (snapWindowTimerRef.current != null) {
+      window.clearTimeout(snapWindowTimerRef.current);
+      snapWindowTimerRef.current = null;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    chatSwitchingRef.current = true;
+    stickToBottomRef.current = true;
     snapToBottomAfterOpenRef.current = true;
-  }, [chatId]);
+    snapWindowActiveRef.current = false;
+    cancelAutoScrollSnap();
+  }, [chatId, cancelAutoScrollSnap]);
 
   useLayoutEffect(() => {
     if (loading || removedFromGroup) return;
+
+    if (chatSwitchingRef.current) {
+      chatSwitchingRef.current = false;
+      snapToBottomAfterOpenRef.current = true;
+      stickToBottomRef.current = true;
+    }
+
     if (!snapToBottomAfterOpenRef.current) return;
-    const el = messagesScrollRef.current;
-    if (!el) return;
-
-    const snap = () => {
-      el.scrollTop = el.scrollHeight;
-    };
-
-    snap();
-    let raf1 = 0;
-    let raf2 = 0;
-    raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(snap);
-    });
-    const t1 = window.setTimeout(snap, 64);
-    const t2 = window.setTimeout(snap, 200);
+    const scrollEl = messagesScrollRef.current;
+    const contentEl = messagesContentRef.current;
+    if (!scrollEl) return;
 
     snapToBottomAfterOpenRef.current = false;
+    snapWindowActiveRef.current = true;
+
+    const snap = (force = false) => {
+      if (!force && !stickToBottomRef.current) return;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    };
+
+    snap(true);
+
+    if (contentEl && typeof ResizeObserver !== 'undefined') {
+      snapResizeObserverRef.current?.disconnect();
+      const ro = new ResizeObserver(() => {
+        if (!snapWindowActiveRef.current || !stickToBottomRef.current) return;
+        if (!isNearBottom()) return;
+        snap();
+      });
+      snapResizeObserverRef.current = ro;
+      ro.observe(contentEl);
+    }
+
+    const timers = [60, 200, 500, 1000].map((ms) =>
+      window.setTimeout(() => {
+        if (stickToBottomRef.current) snap();
+      }, ms),
+    );
+
+    if (snapWindowTimerRef.current != null) window.clearTimeout(snapWindowTimerRef.current);
+    snapWindowTimerRef.current = window.setTimeout(() => {
+      cancelAutoScrollSnap();
+    }, 2500);
 
     return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
+      timers.forEach(window.clearTimeout);
     };
-  }, [chatId, loading, messages.length, removedFromGroup]);
+  }, [chatId, loading, removedFromGroup, cancelAutoScrollSnap, isNearBottom]);
+
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = 'smooth', options?: { force?: boolean }) => {
+      if (!options?.force && !stickToBottomRef.current) return;
+      const el = messagesScrollRef.current;
+      if (el) {
+        el.scrollTo({ top: el.scrollHeight, behavior });
+      }
+    },
+    [],
+  );
 
   /** Same postgres path as sidebar refresh; per-chat Realtime UPDATE can miss peers. */
   useEffect(() => {
@@ -311,15 +383,11 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       const record = (e as CustomEvent<MessageRowUpdatedDetail>).detail?.record;
       if (!record?.id || String(record.chat_id) !== String(chatId)) return;
 
+      const shouldStick = stickToBottomRef.current && isNearBottom();
       setMessages((prev) => mergeMessageList(prev, record));
-      requestAnimationFrame(() => {
-        const el = messagesScrollRef.current;
-        if (el) {
-          el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-        } else {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }
-      });
+      if (shouldStick) {
+        requestAnimationFrame(() => scrollToBottom('smooth', { force: true }));
+      }
 
       if (record.sender_id && user?.id && String(record.sender_id) !== String(user.id)) {
         void markDmChatRead(supabase, chatId);
@@ -344,16 +412,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       window.removeEventListener(MESSAGE_ROW_INSERTED_EVENT, onRowInserted);
       window.removeEventListener(MESSAGE_ROW_UPDATED_EVENT, onRowUpdated);
     };
-  }, [chatId, user?.id]);
-
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    const el = messagesScrollRef.current;
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior });
-    } else {
-      messagesEndRef.current?.scrollIntoView({ behavior });
-    }
-  }, []);
+  }, [chatId, user?.id, scrollToBottom, isNearBottom]);
 
   const updateJumpToLatestVisibility = useCallback(() => {
     const el = messagesScrollRef.current;
@@ -379,15 +438,23 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   useEffect(() => {
     const el = messagesScrollRef.current;
     if (!el || loading || removedFromGroup) return;
-    updateJumpToLatestVisibility();
-    el.addEventListener('scroll', updateJumpToLatestVisibility, { passive: true });
-    const ro = new ResizeObserver(() => updateJumpToLatestVisibility());
+
+    const handleMessagesScroll = () => {
+      const near = isNearBottom();
+      stickToBottomRef.current = near;
+      if (!near) cancelAutoScrollSnap();
+      updateJumpToLatestVisibility();
+    };
+
+    handleMessagesScroll();
+    el.addEventListener('scroll', handleMessagesScroll, { passive: true });
+    const ro = new ResizeObserver(() => handleMessagesScroll());
     ro.observe(el);
     return () => {
-      el.removeEventListener('scroll', updateJumpToLatestVisibility);
+      el.removeEventListener('scroll', handleMessagesScroll);
       ro.disconnect();
     };
-  }, [chatId, loading, removedFromGroup, updateJumpToLatestVisibility]);
+  }, [chatId, loading, removedFromGroup, updateJumpToLatestVisibility, isNearBottom, cancelAutoScrollSnap]);
 
   useEffect(() => {
     if (loading || removedFromGroup) return;
@@ -461,6 +528,32 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     }
   }, [user?.id, favStickerUrls]);
 
+  const openImageLightbox = useCallback((url: string) => {
+    setFullscreenImageUrl(url);
+  }, []);
+
+  const closeImageLightbox = useCallback(() => {
+    setFullscreenImageUrl(null);
+  }, []);
+
+  const renderExpandableChatImage = (url: string) => (
+    <img
+      src={url}
+      alt="Media message"
+      className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl cursor-zoom-in"
+      draggable={false}
+      onClick={() => openImageLightbox(url)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        openImageLightbox(url);
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label="View image full screen"
+    />
+  );
+
   const renderMessageContent = (content: string) => {
     const replyPrefixMatch = content.match(/^↪(?:\[id:([^\]]+)\]\s)?(.+?)\n([\s\S]*)$/);
     if (replyPrefixMatch) {
@@ -490,7 +583,9 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 />
               );
             }
-            if (media.spoiler) return <SpoilerChatImage src={media.url} />;
+            if (media.spoiler) {
+              return <SpoilerChatImage src={media.url} onOpenFullscreen={openImageLightbox} />;
+            }
             const isSticker = media.url.includes('/stickers/');
             if (isSticker) {
               const isFav = favStickerUrls.has(media.url);
@@ -515,14 +610,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                 </div>
               );
             }
-            return (
-              <img
-                src={media.url}
-                alt="Media message"
-                className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
-                draggable={false}
-              />
-            );
+            return renderExpandableChatImage(media.url);
           })()}
         </div>
       );
@@ -530,7 +618,9 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
     const topMedia = parseChatMediaPayload(content);
     if (topMedia) {
-      if (topMedia.spoiler) return <SpoilerChatImage src={topMedia.url} />;
+      if (topMedia.spoiler) {
+        return <SpoilerChatImage src={topMedia.url} onOpenFullscreen={openImageLightbox} />;
+      }
       const isSticker = topMedia.url.includes('/stickers/');
       if (isSticker) {
         const isFav = favStickerUrls.has(topMedia.url);
@@ -555,14 +645,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           </div>
         );
       }
-      return (
-        <img
-          src={topMedia.url}
-          alt="Media message"
-          className="w-full max-w-[520px] max-h-[340px] object-contain rounded-2xl"
-          draggable={false}
-        />
-      );
+      return renderExpandableChatImage(topMedia.url);
     }
 
     return (
@@ -634,7 +717,8 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     }
 
     setMessages((prev) => mergeMessageList(prev, data));
-    requestAnimationFrame(() => scrollToBottom('smooth'));
+    stickToBottomRef.current = true;
+    requestAnimationFrame(() => scrollToBottom('smooth', { force: true }));
 
     try {
       await httpBroadcastChatMessages(supabase, chatId, 'message_inserted', { record: data });
@@ -1103,6 +1187,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
         }
         setSenderNameById(names);
         setSenderAvatarById(avatars);
+        void loadDecorationForSenders(Object.keys(names));
 
         setOtherUser(null);
         setIsGroupOwner(chat?.owner_id === uid);
@@ -1130,6 +1215,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
         const otherRow = allParts?.find((r: any) => r.user_id !== user.id);
         const u = otherRow?.users ? (Array.isArray(otherRow.users) ? otherRow.users[0] : otherRow.users) : null;
         setOtherUser(u || null);
+        if (u?.id) void loadDecorationForSenders([u.id]);
         setMyGroupRole(null);
         setIsGroupOwner(false);
         setSenderNameById({});
@@ -1149,8 +1235,13 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
         } else {
           setMessages(msgs);
         }
+      } else if (!silent) {
+        setMessages([]);
       }
-      if (!silent) setLoading(false);
+      if (!silent) {
+        setLoading(false);
+        snapToBottomAfterOpenRef.current = true;
+      }
     },
     [chatId, user?.id],
   );
@@ -1174,6 +1265,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       const setupGen = ++chatRealtimeSetupGenRef.current;
       let cancelled = false;
       setTypingPeers({});
+      setLoading(true);
       void loadChat({ mountGen: setupGen });
 
       void (async () => {
@@ -1197,8 +1289,11 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
           (payload) => {
             const row = payload.new as { sender_id?: string } | null;
+            const shouldStick = stickToBottomRef.current && isNearBottom();
             setMessages((prev) => mergeMessageList(prev, row));
-            requestAnimationFrame(() => scrollToBottom('smooth'));
+            if (shouldStick) {
+              requestAnimationFrame(() => scrollToBottom('smooth', { force: true }));
+            }
             if (row?.sender_id && user?.id && String(row.sender_id) !== String(user.id)) {
               void markDmChatRead(supabase, chatId);
               if (isGroupRef.current) dispatchChatRead(chatId);
@@ -1213,8 +1308,11 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             sender_id?: string;
           } | undefined;
           if (!record?.id || String(record.chat_id) !== String(chatId)) return;
+          const shouldStick = stickToBottomRef.current && isNearBottom();
           setMessages((prev) => mergeMessageList(prev, record));
-          requestAnimationFrame(() => scrollToBottom('smooth'));
+          if (shouldStick) {
+            requestAnimationFrame(() => scrollToBottom('smooth', { force: true }));
+          }
           if (record.sender_id && user?.id && String(record.sender_id) !== String(user.id)) {
             void markDmChatRead(supabase, chatId);
             if (isGroupRef.current) dispatchChatRead(chatId);
@@ -1415,7 +1513,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       };
     }
     return undefined;
-  }, [chatId, user?.id, loadChat, scrollToBottom]);
+  }, [chatId, user?.id, loadChat, scrollToBottom, isNearBottom]);
 
   const deleteMyTyping = useCallback(async () => {
     if (!user?.id || !chatId) return;
@@ -1567,7 +1665,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     return Math.min(420, Math.max(280, Math.floor(window.innerHeight * 0.42)));
   }, [pickerLayoutTick]);
 
-  const { getMessageSwipeHandlers, getSwipeShiftStyle, getSwipeTrackStyle, isSwipeNearCommit } = useSwipeToReply({
+  const { getMessageSwipeHandlers, registerShiftEl, registerTrackEl, msgKeyOf } = useSwipeToReply({
     enabled: !removedFromGroup && editingMessageId === null,
     onReply: (msg) => {
       setReplyingToMsg(msg);
@@ -1890,9 +1988,10 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
       <div className="relative z-0 flex-1 min-h-0 flex flex-col">
         <div
           ref={messagesScrollRef}
-          className="flex-1 min-h-0 overflow-y-auto px-3 py-3 sm:p-4 flex flex-col custom-scrollbar"
+          className="flex-1 min-h-0 overflow-y-auto px-3 py-3 sm:p-4 flex flex-col custom-scrollbar chat-messages-scroll"
           onClickCapture={handleMessagesLinkClick}
         >
+        <div ref={messagesContentRef} className="flex flex-col">
         {messages.map((msg, idx) => {
           const isMe = msg.sender_id === user?.id;
           const msgId = msg?.id;
@@ -1953,7 +2052,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               key={msgId || idx}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className={`relative w-full flex ${isMe ? 'justify-end' : 'justify-start'} ${clusterGapClass}${isMobileComposer ? ' touch-pan-y' : ''}`}
+              className={`relative w-full flex ${isMe ? 'justify-end' : 'justify-start'} ${clusterGapClass} msg-swipe-row`}
               ref={(node) => {
                 if (!msgId) return;
                 messageNodeMapRef.current.set(String(msgId), node);
@@ -1962,22 +2061,19 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             >
               <div
                 aria-hidden
+                ref={(el) => { const k = msgKeyOf(msg); if (k) registerTrackEl(k, el); }}
                 className="pointer-events-none absolute inset-y-0 left-0 z-0 flex w-11 items-center justify-center sm:w-12"
-                style={getSwipeTrackStyle(msg)}
+                style={{ opacity: 0, transform: 'scale(0.65)' }}
               >
                 <div
-                  className={cn(
-                    'flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-md sm:h-10 sm:w-10',
-                    'border-primary/35 bg-primary/20 shadow-md shadow-black/15',
-                    'dark:border-primary/40 dark:bg-primary/25 dark:shadow-black/40',
-                    isSwipeNearCommit(msg) && 'ring-2 ring-primary/60 shadow-lg shadow-primary/25',
-                  )}
-                  style={{ transition: 'box-shadow 0.18s ease, filter 0.18s ease' }}
+                  className="swipe-commit-ring flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-md sm:h-10 sm:w-10 border-primary/35 bg-primary/20 shadow-md shadow-black/15 dark:border-primary/40 dark:bg-primary/25 dark:shadow-black/40"
+                  style={{ transition: 'box-shadow 0.18s ease, border-color 0.18s ease' }}
                 >
                   <CornerUpLeft className="text-primary drop-shadow-sm" size={18} strokeWidth={2.35} />
                 </div>
               </div>
               <div
+                ref={(el) => { const k = msgKeyOf(msg); if (k) registerShiftEl(k, el); }}
                 className={cn(
                   `relative z-[1] flex min-w-0 items-start max-w-[min(86vw,30rem)] md:max-w-[min(70%,28rem)] gap-2.5 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'}`,
                   msgId && highlightedMessageId && String(msgId) === highlightedMessageId
@@ -1985,7 +2081,6 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                     : '',
                   'group',
                 )}
-                style={getSwipeShiftStyle(msg)}
               >
                 {isGroup && (
                   <div
@@ -2056,6 +2151,11 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                         : 'bg-secondary/80 border border-border/50 text-foreground rounded-tl-sm backdrop-blur-sm',
                     !isMediaMessage || isEditingThis ? 'min-w-0 max-w-full overflow-hidden' : '',
                   ].join(' ')}
+                  style={
+                    !isMediaMessage || isEditingThis
+                      ? (getDecorationById(senderDecorationById[msg.sender_id] ?? null)?.getStyle(isMe) ?? undefined)
+                      : undefined
+                  }
                   data-chat-message="true"
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -2173,9 +2273,10 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           );
         })}
         <div ref={messagesEndRef} />
+        </div>{/* end messagesContentRef */}
         </div>
-
-        {showJumpToLatest ? (
+        
+        {showJumpToLatest ? ( 
           <motion.button
             type="button"
             aria-label="Jump to latest message"
@@ -2190,7 +2291,8 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               'hover:border-primary/45 hover:bg-primary/12 hover:text-primary transition-colors',
             )}
             onClick={() => {
-              scrollToBottom('smooth');
+              stickToBottomRef.current = true;
+              scrollToBottom('smooth', { force: true });
               window.setTimeout(() => updateJumpToLatestVisibility(), 450);
             }}
           >
@@ -2262,7 +2364,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
         )}
 
         {replyingToMsg && (
-          <div className="mb-3 bg-secondary/20 border border-border/40 rounded-2xl p-3 flex items-start gap-3">
+          <div className="reply-bar-enter mb-3 bg-secondary/20 border border-border/40 rounded-2xl p-3 flex items-start gap-3">
             <div className="mt-0.5 text-primary">
               <CornerUpLeft size={16} />
             </div>
@@ -2300,7 +2402,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           </div>
         ) : null}
 
-        <div className="flex items-end gap-1.5 sm:gap-2 bg-secondary/30 border border-border/50 rounded-[1.7rem] sm:rounded-3xl p-1.5 sm:p-1 shadow-inner focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/50 transition-all duration-200 min-w-0">
+        <div className="composer-container flex items-end gap-1.5 sm:gap-2 bg-secondary/30 border border-border/50 rounded-[1.7rem] sm:rounded-3xl p-1.5 sm:p-1 shadow-inner transition-all duration-200 min-w-0">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -2507,6 +2609,21 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
 
           <button
             type="button"
+            onClick={() => {
+              setEmojiOpen(false);
+              setGifOpen(false);
+              setStickerOpen(false);
+              setDecorShopOpen((v) => !v);
+            }}
+            className="p-2 rounded-full text-muted-foreground hover:bg-secondary hover:text-blue-400 transition-colors shrink-0"
+            aria-label="Bubble decorations"
+            disabled={!user || editingMessageId !== null}
+          >
+            <Sparkles size={18} />
+          </button>
+
+          <button
+            type="button"
             onClick={() => (imagePreviewUrl ? void sendSelectedImage() : void sendTextMessage())}
             disabled={
               sendingMedia ||
@@ -2520,10 +2637,22 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
         </div>
       </div>
 
+      {decorShopOpen
+        ? createPortal(
+            <div
+              className="pointer-events-auto fixed z-[100] flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-background/98 shadow-2xl backdrop-blur-xl"
+              style={{ right: 16, bottom: 80, width: 340, maxHeight: 480 }}
+            >
+              <DecorationShop onClose={() => setDecorShopOpen(false)} />
+            </div>,
+            document.body,
+          )
+        : null}
+
       {contextMenuOpen && (
         <div
           ref={contextMenuRef}
-          className="fixed z-50 min-w-[140px] rounded-xl border border-border/40 bg-background/95 backdrop-blur-xl shadow-2xl overflow-hidden"
+          className="ctx-menu-enter fixed z-50 min-w-[140px] rounded-xl border border-border/40 bg-background/95 backdrop-blur-xl shadow-2xl overflow-hidden"
           style={{ left: contextMenuPos.x, top: contextMenuPos.y }}
           onMouseDown={(e) => {
             // Prevent outside-click handler from closing before click.
@@ -2636,6 +2765,8 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           </Button>
         </div>
       </Modal>
+
+      <ChatImageLightbox src={fullscreenImageUrl} onClose={closeImageLightbox} />
 
       {isGroup && (
         <GroupManageModal

@@ -10,25 +10,25 @@ import {
 } from '../lib/presenceBroadcastBridge';
 import {
   registerPresenceOfflineBeforeSignOut,
+  setDesktopNotificationsEnabled,
   setPresenceNotificationsSilenced,
   unregisterPresenceOfflineBeforeSignOut,
 } from '../lib/presenceNotifyGate';
 import type { PresenceStatus } from '../lib/presenceDisplay';
+import { peerPresenceLabel } from '../lib/presenceDisplay';
+import {
+  fetchPrivacySettings,
+  loadCachedPrivacy,
+  migrateLocalPrivacyToSupabase,
+  updatePrivacySettings,
+  PRIVACY_STORAGE_KEYS,
+  type ManualPresence,
+  type PrivacySettings,
+} from '../lib/privacyPreferences';
 
-export type ManualPresence = 'online' | 'idle' | 'busy';
+export type { ManualPresence };
 
-const STORAGE_KEY = 'dogito_presence_manual';
 const HEARTBEAT_MS = 30_000;
-
-function loadManual(): ManualPresence {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === 'online' || v === 'idle' || v === 'busy') return v;
-  } catch {
-    /* ignore */
-  }
-  return 'online';
-}
 
 function computeEffective(manual: ManualPresence, netOnline: boolean, inForeground: boolean): PresenceStatus {
   if (!netOnline) return 'offline';
@@ -37,11 +37,34 @@ function computeEffective(manual: ManualPresence, netOnline: boolean, inForegrou
   return inForeground ? 'online' : 'idle';
 }
 
+function applyPrivacyToState(
+  settings: PrivacySettings,
+  setters: {
+    setManualModeState: (m: ManualPresence) => void;
+    setAppearOffline: (v: boolean) => void;
+    setDesktopNotifications: (v: boolean) => void;
+  },
+) {
+  setters.setManualModeState(settings.presence_manual);
+  setters.setAppearOffline(settings.privacy_appear_offline);
+  setters.setDesktopNotifications(settings.privacy_desktop_notifications);
+  setDesktopNotificationsEnabled(settings.privacy_desktop_notifications);
+}
+
 interface PresenceContextValue {
   manualMode: ManualPresence;
-  setManualMode: (m: ManualPresence) => void;
+  setManualMode: (m: ManualPresence) => Promise<void>;
+  appearOffline: boolean;
+  setAppearOffline: (enabled: boolean) => Promise<void>;
+  desktopNotificationsEnabled: boolean;
+  setDesktopNotificationsEnabled: (enabled: boolean) => Promise<void>;
   effectiveStatus: PresenceStatus;
+  /** What friends see in chat lists (accounts for appear-offline). */
+  friendsSeeStatus: PresenceStatus;
+  friendsSeeLabel: string;
   inForeground: boolean;
+  privacyReady: boolean;
+  privacySaving: boolean;
 }
 
 const PresenceContext = createContext<PresenceContextValue | undefined>(undefined);
@@ -49,30 +72,29 @@ const PresenceContext = createContext<PresenceContextValue | undefined>(undefine
 export function PresenceProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const presenceBroadcastChRef = useRef<RealtimeChannel | null>(null);
+  const cached = loadCachedPrivacy();
 
-  const [manualMode, setManualModeState] = useState<ManualPresence>(() => loadManual());
+  const [manualMode, setManualModeState] = useState<ManualPresence>(() => cached.presence_manual);
+  const [appearOffline, setAppearOfflineState] = useState(() => cached.privacy_appear_offline);
+  const [desktopNotificationsEnabled, setDesktopNotificationsState] = useState(
+    () => cached.privacy_desktop_notifications,
+  );
+  const [privacyReady, setPrivacyReady] = useState(false);
+  const [privacySaving, setPrivacySaving] = useState(false);
   const [netOnline, setNetOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
   const [visible, setVisible] = useState(() =>
     typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
   );
   const [docFocused, setDocFocused] = useState(() => (typeof document !== 'undefined' ? document.hasFocus() : true));
-  /** True once Tauri window APIs work; WebView often lies about document.hasFocus(). */
   const [tauriRuntime, setTauriRuntime] = useState(false);
   const [tauriFocused, setTauriFocused] = useState<boolean | null>(null);
 
-  const setManualMode = useCallback((m: ManualPresence) => {
-    setManualModeState(m);
-    try {
-      localStorage.setItem(STORAGE_KEY, m);
-    } catch {
-      /* ignore */
-    }
-  }, [user?.id]);
+  const appearOfflineRef = useRef(appearOffline);
+  appearOfflineRef.current = appearOffline;
 
   const inForeground = useMemo(() => {
     if (!visible) return false;
     if (tauriRuntime) {
-      // Native window focus is reliable; hasFocus() is often false in WebView2 while the app is active.
       if (tauriFocused === null) return visible;
       return tauriFocused;
     }
@@ -83,8 +105,18 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     () => computeEffective(manualMode, netOnline, inForeground),
     [manualMode, netOnline, inForeground],
   );
+
+  const friendsSeeStatus: PresenceStatus = appearOffline ? 'offline' : effectiveStatus;
+  const friendsSeeLabel = peerPresenceLabel(friendsSeeStatus);
+
   const effectiveStatusRef = useRef(effectiveStatus);
   effectiveStatusRef.current = effectiveStatus;
+  const friendsSeeStatusRef = useRef(friendsSeeStatus);
+  friendsSeeStatusRef.current = friendsSeeStatus;
+
+  useEffect(() => {
+    setDesktopNotificationsEnabled(desktopNotificationsEnabled);
+  }, [desktopNotificationsEnabled]);
 
   useEffect(() => {
     setPresenceNotificationsSilenced(Boolean(user?.id) && effectiveStatus === 'busy');
@@ -126,14 +158,143 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     [user?.id],
   );
 
+  const publishPresence = useCallback(() => {
+    const status = appearOfflineRef.current ? 'offline' : effectiveStatusRef.current;
+    void pushPresence(status);
+  }, [pushPresence]);
+
   const pushOfflineNow = useCallback(async () => {
     await pushPresence('offline');
   }, [pushPresence]);
+
+  const persistPrivacy = useCallback(
+    async (patch: Partial<PrivacySettings>) => {
+      const uid = user?.id;
+      if (!uid) return { error: new Error('Not signed in') };
+      setPrivacySaving(true);
+      const { data, error } = await updatePrivacySettings(uid, patch);
+      setPrivacySaving(false);
+      if (error) return { error };
+      if (data) {
+        applyPrivacyToState(data, {
+          setManualModeState,
+          setAppearOffline: setAppearOfflineState,
+          setDesktopNotifications: setDesktopNotificationsState,
+        });
+        publishPresence();
+      }
+      return { error: null };
+    },
+    [user?.id, publishPresence],
+  );
+
+  const setManualMode = useCallback(
+    async (m: ManualPresence) => {
+      setManualModeState(m);
+      await persistPrivacy({ presence_manual: m });
+    },
+    [persistPrivacy],
+  );
+
+  const setAppearOffline = useCallback(
+    async (enabled: boolean) => {
+      setAppearOfflineState(enabled);
+      appearOfflineRef.current = enabled;
+      publishPresence();
+      await persistPrivacy({ privacy_appear_offline: enabled });
+    },
+    [persistPrivacy, publishPresence],
+  );
+
+  const setDesktopNotificationsEnabledHandler = useCallback(
+    async (enabled: boolean) => {
+      setDesktopNotificationsState(enabled);
+      setDesktopNotificationsEnabled(enabled);
+      if (enabled) {
+        try {
+          const { isPermissionGranted, requestPermission } = await import('../lib/notifications');
+          let granted = await isPermissionGranted();
+          if (!granted) {
+            const permission = await requestPermission();
+            granted = permission === 'granted';
+          }
+        } catch {
+          /* browser / no Tauri */
+        }
+      }
+      await persistPrivacy({ privacy_desktop_notifications: enabled });
+    },
+    [persistPrivacy],
+  );
 
   useEffect(() => {
     registerPresenceOfflineBeforeSignOut(pushOfflineNow);
     return () => unregisterPresenceOfflineBeforeSignOut();
   }, [pushOfflineNow]);
+
+  useEffect(() => {
+    const uid = user?.id;
+    if (!uid) {
+      setPrivacyReady(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPrivacyReady(false);
+
+    void (async () => {
+      await migrateLocalPrivacyToSupabase(uid);
+      const { data, error } = await fetchPrivacySettings(uid);
+      if (cancelled) return;
+      if (data) {
+        applyPrivacyToState(data, {
+          setManualModeState,
+          setAppearOffline: setAppearOfflineState,
+          setDesktopNotifications: setDesktopNotificationsState,
+        });
+        appearOfflineRef.current = data.privacy_appear_offline;
+      } else if (error) {
+        const fallback = loadCachedPrivacy();
+        applyPrivacyToState(fallback, {
+          setManualModeState,
+          setAppearOffline: setAppearOfflineState,
+          setDesktopNotifications: setDesktopNotificationsState,
+        });
+        appearOfflineRef.current = fallback.privacy_appear_offline;
+      }
+      setPrivacyReady(true);
+    })();
+
+    const ch = supabase
+      .channel(`privacy:${uid}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'users', filter: `id=eq.${uid}` },
+        (payload) => {
+          const row = payload.new as Record<string, unknown> | null;
+          if (!row) return;
+          const manual = row.presence_manual;
+          if (manual === 'online' || manual === 'idle' || manual === 'busy') {
+            setManualModeState(manual);
+          }
+          if (typeof row.privacy_appear_offline === 'boolean') {
+            setAppearOfflineState(row.privacy_appear_offline);
+            appearOfflineRef.current = row.privacy_appear_offline;
+            publishPresence();
+          }
+          if (typeof row.privacy_desktop_notifications === 'boolean') {
+            setDesktopNotificationsState(row.privacy_desktop_notifications);
+            setDesktopNotificationsEnabled(row.privacy_desktop_notifications);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      void supabase.removeChannel(ch);
+    };
+  }, [user?.id, publishPresence]);
 
   useEffect(() => {
     const onVis = () => setVisible(document.visibilityState === 'visible');
@@ -150,16 +311,27 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     onVis();
 
     const onStorage = (e: StorageEvent) => {
-      if (e.key !== STORAGE_KEY) return;
-      const v = e.newValue;
-      if (v === 'online' || v === 'idle' || v === 'busy') {
-        setManualModeState(v);
+      if (!e.key) return;
+      if (e.key === PRIVACY_STORAGE_KEYS.manual) {
+        const v = e.newValue;
+        if (v === 'online' || v === 'idle' || v === 'busy') setManualModeState(v);
+      }
+      if (e.key === PRIVACY_STORAGE_KEYS.appearOffline) {
+        const next = e.newValue === 'true';
+        setAppearOfflineState(next);
+        appearOfflineRef.current = next;
+        publishPresence();
+      }
+      if (e.key === PRIVACY_STORAGE_KEYS.desktopNotifications) {
+        const next = e.newValue !== 'false';
+        setDesktopNotificationsState(next);
+        setDesktopNotificationsEnabled(next);
       }
     };
     window.addEventListener('storage', onStorage);
 
     let unlistenTauri: (() => void) | undefined;
-    (async () => {
+    void (async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const w = getCurrentWindow();
@@ -184,7 +356,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('storage', onStorage);
       unlistenTauri?.();
     };
-  }, []);
+  }, [publishPresence]);
 
   useEffect(() => {
     if (!user?.id) {
@@ -203,7 +375,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           presenceBroadcastChRef.current = ch;
-          void pushPresence(effectiveStatusRef.current);
+          publishPresence();
         } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           presenceBroadcastChRef.current = null;
         }
@@ -213,25 +385,21 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
       presenceBroadcastChRef.current = null;
       void supabase.removeChannel(ch);
     };
-  }, [user?.id, pushPresence]);
+  }, [user?.id, publishPresence]);
 
   useEffect(() => {
     if (!user?.id) return;
 
-    const run = () => {
-      void pushPresence(effectiveStatus);
-    };
-
-    run();
-    const id = window.setInterval(run, HEARTBEAT_MS);
+    publishPresence();
+    const id = window.setInterval(publishPresence, HEARTBEAT_MS);
     return () => window.clearInterval(id);
-  }, [user?.id, effectiveStatus, pushPresence]);
+  }, [user?.id, effectiveStatus, appearOffline, publishPresence]);
 
   useEffect(() => {
     if (!user?.id) return;
 
     let unlisten: (() => void) | undefined;
-    (async () => {
+    void (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
         unlisten = await listen('presence-set-offline', () => {
@@ -248,8 +416,34 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
   }, [user?.id, pushOfflineNow]);
 
   const value = useMemo(
-    () => ({ manualMode, setManualMode, effectiveStatus, inForeground }),
-    [manualMode, setManualMode, effectiveStatus, inForeground],
+    () => ({
+      manualMode,
+      setManualMode,
+      appearOffline,
+      setAppearOffline,
+      desktopNotificationsEnabled,
+      setDesktopNotificationsEnabled: setDesktopNotificationsEnabledHandler,
+      effectiveStatus,
+      friendsSeeStatus,
+      friendsSeeLabel,
+      inForeground,
+      privacyReady,
+      privacySaving,
+    }),
+    [
+      manualMode,
+      setManualMode,
+      appearOffline,
+      setAppearOffline,
+      desktopNotificationsEnabled,
+      setDesktopNotificationsEnabledHandler,
+      effectiveStatus,
+      friendsSeeStatus,
+      friendsSeeLabel,
+      inForeground,
+      privacyReady,
+      privacySaving,
+    ],
   );
 
   return <PresenceContext.Provider value={value}>{children}</PresenceContext.Provider>;
@@ -263,7 +457,6 @@ export function usePresence() {
   return ctx;
 }
 
-/** For optional UI outside provider (e.g. safe no-op). */
 export function usePresenceOptional(): PresenceContextValue | null {
   return useContext(PresenceContext) ?? null;
 }

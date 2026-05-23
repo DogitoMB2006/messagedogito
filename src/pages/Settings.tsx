@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { MainLayout } from '../components/layout/MainLayout';
 import { ProfileEditModal } from '../components/chat/ProfileEditModal';
+import { PrivacySettingsSection } from '../components/settings/PrivacySettingsSection';
+import { SettingsToggleRow } from '../components/settings/SettingsToggleRow';
 import { Button } from '../components/ui/button';
-import { User, Bell, Shield, Moon, Monitor, Palette, Power, RefreshCw } from 'lucide-react';
+import { User, Moon, Sun, Monitor, Palette, Power, RefreshCw } from 'lucide-react';
 import { Avatar } from '../components/ui/avatar';
 import { motion } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { cn } from '../lib/utils';
 import {
   getAutostartPreference,
@@ -21,6 +24,7 @@ export function Settings() {
   const [autostartBusy, setAutostartBusy] = useState(false);
   const { profile, signOut } = useAuth();
   const { checkForUpdates, isChecking } = useUpdate();
+  const { theme, setTheme } = useTheme();
   const showDesktopAutostart = isDesktopChromeAvailable();
 
   useEffect(() => {
@@ -38,13 +42,13 @@ export function Settings() {
     hidden: { opacity: 0 },
     show: {
       opacity: 1,
-      transition: { staggerChildren: 0.1 }
-    }
+      transition: { staggerChildren: 0.1 },
+    },
   };
 
   const itemVariants = {
     hidden: { opacity: 0, y: 10 },
-    show: { opacity: 1, y: 0 }
+    show: { opacity: 1, y: 0 },
   };
 
   return (
@@ -56,59 +60,89 @@ export function Settings() {
         </div>
 
         <motion.div variants={containerVariants} initial="hidden" animate="show" className="space-y-6">
-          {/* Profile Section */}
-          <motion.section variants={itemVariants} className="p-6 rounded-3xl border border-border/40 bg-secondary/10 backdrop-blur-sm shadow-sm relative overflow-hidden">
+          <motion.section
+            variants={itemVariants}
+            className="p-6 rounded-3xl border border-border/40 bg-secondary/10 backdrop-blur-sm shadow-sm relative overflow-hidden"
+          >
             <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-[80px]" />
             <h2 className="text-lg font-semibold mb-6 flex items-center gap-2 relative z-10">
               <User size={20} className="text-primary" /> Profile Details
             </h2>
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6 relative z-10">
-              <Avatar size="xl" src={profile?.avatar_url} fallback={profile?.display_name || 'U'} className="shrink-0 shadow-xl ring-2 ring-primary/20" />
+              <Avatar
+                size="xl"
+                src={profile?.avatar_url}
+                fallback={profile?.display_name || 'U'}
+                className="shrink-0 shadow-xl ring-2 ring-primary/20"
+              />
               <div className="flex-1 space-y-1">
                 <h3 className="text-2xl font-bold">{profile?.display_name || 'Loading...'}</h3>
                 <p className="text-primary font-medium">@{profile?.username}</p>
                 <p className="text-sm text-foreground/80 mt-2 max-w-sm">{profile?.bio || 'No bio yet.'}</p>
               </div>
-              <Button onClick={() => setIsEditProfileOpen(true)} className="bg-primary/10 text-primary hover:bg-primary/20 border-0 shadow-none">
+              <Button
+                onClick={() => setIsEditProfileOpen(true)}
+                className="bg-primary/10 text-primary hover:bg-primary/20 border-0 shadow-none"
+              >
                 Edit Profile
               </Button>
             </div>
           </motion.section>
 
-          {/* App Preferences */}
-          <motion.section variants={itemVariants} className="p-6 rounded-3xl border border-border/40 bg-secondary/10 backdrop-blur-sm shadow-sm">
+          <motion.section
+            variants={itemVariants}
+            className="p-6 rounded-3xl border border-border/40 bg-secondary/10 backdrop-blur-sm shadow-sm"
+          >
             <h2 className="text-lg font-semibold mb-6 flex items-center gap-2">
               <Monitor size={20} className="text-primary" /> App Preferences
             </h2>
             <div className="space-y-2">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
                 <div>
-                  <h4 className="font-medium text-foreground flex items-center gap-2"><Palette size={16} className="text-muted-foreground" /> Theme</h4>
+                  <h4 className="font-medium text-foreground flex items-center gap-2">
+                    <Palette size={16} className="text-muted-foreground" /> Theme
+                  </h4>
                   <p className="text-sm text-muted-foreground mt-0.5">Customize your app appearance</p>
                 </div>
                 <div className="flex items-center gap-1 p-1 bg-background border border-border/50 rounded-lg shadow-inner">
-                  <button type="button" className="flex items-center gap-2 px-3 py-1.5 bg-secondary text-foreground shadow-sm rounded-md text-sm font-medium transition-colors"><Moon size={14} /> Dark</button>
-                  <button type="button" className="flex items-center gap-2 px-3 py-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary/50 rounded-md text-sm font-medium transition-colors"><Monitor size={14} /> System</button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme('dark')}
+                    className={cn(
+                      'flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                      theme === 'dark'
+                        ? 'bg-secondary text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50',
+                    )}
+                  >
+                    <Moon size={14} /> Dark
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme('light')}
+                    className={cn(
+                      'flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                      theme === 'light'
+                        ? 'bg-secondary text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50',
+                    )}
+                  >
+                    <Sun size={14} /> Light
+                  </button>
                 </div>
               </div>
 
               {showDesktopAutostart ? (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
-                  <div>
-                    <h4 className="font-medium text-foreground flex items-center gap-2">
+                <SettingsToggleRow
+                  title={
+                    <span className="flex items-center gap-2">
                       <Power size={16} className="text-muted-foreground" /> Open when system starts
-                  </h4>
-                  <p className="text-sm text-muted-foreground mt-0.5">
-                    Launch DogitoChat when you log in to your computer. Desktop app only; ignored in the browser.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={autostart}
+                    </span>
+                  }
+                  description="Launch DogitoChat when you log in to your computer. Desktop app only."
+                  checked={autostart}
                   disabled={autostartBusy}
-                  onClick={async () => {
-                    const next = !autostart;
+                  onCheckedChange={async (next) => {
                     setAutostartBusy(true);
                     try {
                       await setAutostartEnabled(next);
@@ -117,51 +151,35 @@ export function Settings() {
                       setAutostartBusy(false);
                     }
                   }}
-                  className={cn(
-                    'w-11 h-6 rounded-full relative transition-colors shadow-inner shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50',
-                    autostart ? 'bg-primary' : 'bg-muted-foreground/30',
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'absolute top-1 w-4 h-4 bg-white rounded-full transition-all shadow-sm',
-                      autostart ? 'right-1' : 'left-1',
-                    )}
-                  />
-                </button>
-                </div>
+                />
               ) : null}
 
               <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
                 <div>
-                  <h4 className="font-medium text-foreground flex items-center gap-2"><Bell size={16} className="text-muted-foreground"/> Notifications</h4>
-                  <p className="text-sm text-muted-foreground mt-0.5">Desktop alerts and sounds</p>
+                  <h4 className="font-medium text-foreground flex items-center gap-2">
+                    <RefreshCw size={16} className="text-muted-foreground" /> Updates
+                  </h4>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Check for the latest DogitoChat version
+                    {showDesktopAutostart ? '' : ' and download the newest Android APK'}.
+                  </p>
                 </div>
-                <div className="w-11 h-6 bg-primary rounded-full relative cursor-pointer shadow-inner">
-                  <div className="absolute right-1 top-1 w-4 h-4 bg-white rounded-full transition-all shadow-sm" />
-                </div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
-                <div>
-                  <h4 className="font-medium text-foreground flex items-center gap-2"><RefreshCw size={16} className="text-muted-foreground"/> Updates</h4>
-                  <p className="text-sm text-muted-foreground mt-0.5">Check for the latest DogitoChat version{showDesktopAutostart ? '' : ' and download the newest Android APK'}.</p>
-                </div>
-                <Button type="button" variant="outline" size="sm" className="bg-background gap-2" onClick={() => void checkForUpdates()} disabled={isChecking}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="bg-background gap-2"
+                  onClick={() => void checkForUpdates()}
+                  disabled={isChecking}
+                >
                   <RefreshCw size={14} className={isChecking ? 'animate-spin' : ''} />
                   {isChecking ? 'Checking...' : 'Check for updates'}
                 </Button>
               </div>
-
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between py-3 px-4 rounded-xl hover:bg-secondary/30 transition-colors gap-4">
-                <div>
-                  <h4 className="font-medium text-foreground flex items-center gap-2"><Shield size={16} className="text-muted-foreground"/> Privacy</h4>
-                  <p className="text-sm text-muted-foreground mt-0.5">Manage visibility and status</p>
-                </div>
-                <Button variant="outline" size="sm" className="bg-background">Manage</Button>
-              </div>
             </div>
           </motion.section>
+
+          <PrivacySettingsSection variants={itemVariants} />
 
           <Button variant="danger" className="w-full sm:w-auto" onClick={signOut}>
             Sign Out

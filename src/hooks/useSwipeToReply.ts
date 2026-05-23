@@ -1,11 +1,12 @@
-import type { CSSProperties } from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 const MIN_DX = 52;
 const MAX_ABS_DY = 46;
 /** Visual cap (px) — rubber-band asymptote */
 const MAX_SHIFT = 78;
 const COMMIT_HINT_AT = 44;
+const SPRING_BACK_MS = 400;
+const CLEANUP_DELAY_MS = 480;
 
 type Options = {
   enabled: boolean;
@@ -19,12 +20,7 @@ type Session = {
   canceled: boolean;
   msg: unknown;
   msgKey: string;
-};
-
-type VisualState = {
-  key: string | null;
-  offset: number;
-  dragging: boolean;
+  nearCommit: boolean;
 };
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
@@ -40,20 +36,60 @@ function rubberShift(rawDx: number): number {
   return MAX_SHIFT * t;
 }
 
+function applyShiftDOM(el: HTMLElement | null, offset: number, animate: boolean): void {
+  if (!el) return;
+  if (animate) {
+    el.style.transition = `transform ${SPRING_BACK_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+    el.style.willChange = '';
+  } else {
+    el.style.transition = 'none';
+    el.style.willChange = 'transform';
+  }
+  el.style.transform = offset !== 0 ? `translate3d(${offset}px, 0, 0)` : '';
+}
+
+function applyTrackDOM(el: HTMLElement | null, offset: number, animate: boolean, nearCommit: boolean): void {
+  if (!el) return;
+  const p = Math.min(1, offset / 42);
+  const eased = 1 - (1 - p) * (1 - p);
+  const opacity = offset > 0 ? 0.12 + 0.88 * eased : 0;
+  const scale = offset > 0 ? 0.68 + 0.32 * eased : 0.65;
+  if (animate) {
+    el.style.transition = `opacity ${SPRING_BACK_MS * 0.75}ms cubic-bezier(0.22, 1, 0.36, 1), transform ${SPRING_BACK_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+  } else {
+    el.style.transition = 'none';
+  }
+  el.style.opacity = String(opacity);
+  el.style.transform = `scale(${scale})`;
+  // data attribute drives CSS ring — zero React state
+  el.dataset.swipeNear = nearCommit ? 'true' : 'false';
+}
+
 /**
- * Telegram/WhatsApp-style swipe/drag right with motion + reply affordance.
- * Pointer events: mouse, touch, pen. Spring-back uses CSS transition.
+ * Telegram/WhatsApp-style swipe/drag right.
+ * Pure DOM manipulation — ZERO React state changes during any part of the gesture.
+ * The commit-hint ring is driven by a data-swipe-near CSS attribute, not React state.
  */
 export function useSwipeToReply({ enabled, onReply }: Options) {
   const optsRef = useRef<Options>({ enabled, onReply });
   optsRef.current = { enabled, onReply };
 
   const sessionRef = useRef<Session | null>(null);
-  const [visual, setVisual] = useState<VisualState>({ key: null, offset: 0, dragging: false });
   const rafRef = useRef<number | null>(null);
   const pendingOffsetRef = useRef(0);
-  const pendingKeyRef = useRef<string | null>(null);
   const settleTimerRef = useRef<number | null>(null);
+
+  // DOM element registries keyed by msgId string
+  const shiftElMap = useRef<Map<string, HTMLElement | null>>(new Map());
+  const trackElMap = useRef<Map<string, HTMLElement | null>>(new Map());
+
+  const registerShiftEl = useCallback((key: string, el: HTMLElement | null) => {
+    if (key) shiftElMap.current.set(key, el ?? null);
+  }, []);
+
+  const registerTrackEl = useCallback((key: string, el: HTMLElement | null) => {
+    if (key) trackElMap.current.set(key, el ?? null);
+  }, []);
 
   const clearSettleTimer = useCallback(() => {
     if (settleTimerRef.current != null) {
@@ -62,22 +98,19 @@ export function useSwipeToReply({ enabled, onReply }: Options) {
     }
   }, []);
 
-  const scheduleVisualReset = useCallback(() => {
-    clearSettleTimer();
-    settleTimerRef.current = window.setTimeout(() => {
-      settleTimerRef.current = null;
-      setVisual({ key: null, offset: 0, dragging: false });
-    }, 460);
-  }, [clearSettleTimer]);
-
   useEffect(() => () => clearSettleTimer(), [clearSettleTimer]);
 
   const flushRaf = useCallback(() => {
     rafRef.current = null;
-    const key = pendingKeyRef.current;
-    const off = pendingOffsetRef.current;
-    if (key == null) return;
-    setVisual({ key, offset: off, dragging: true });
+    const s = sessionRef.current;
+    if (!s) return;
+    const offset = pendingOffsetRef.current;
+    const nearCommit = offset >= COMMIT_HINT_AT;
+
+    // Pure DOM — zero React re-renders, always
+    applyShiftDOM(shiftElMap.current.get(s.msgKey) ?? null, offset, false);
+    applyTrackDOM(trackElMap.current.get(s.msgKey) ?? null, offset, false, nearCommit);
+    s.nearCommit = nearCommit;
   }, []);
 
   const onPointerDown = useCallback(
@@ -98,10 +131,9 @@ export function useSwipeToReply({ enabled, onReply }: Options) {
         canceled: false,
         msg,
         msgKey,
+        nearCommit: false,
       };
-      pendingKeyRef.current = msgKey;
       pendingOffsetRef.current = 0;
-      setVisual({ key: msgKey, offset: 0, dragging: true });
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     },
     [clearSettleTimer],
@@ -116,9 +148,7 @@ export function useSwipeToReply({ enabled, onReply }: Options) {
       if (Math.abs(dy) > 18 && Math.abs(dy) > Math.abs(dx) * 1.12) {
         s.canceled = true;
       }
-      const shift = s.canceled ? 0 : rubberShift(dx);
-      pendingKeyRef.current = s.msgKey;
-      pendingOffsetRef.current = shift;
+      pendingOffsetRef.current = s.canceled ? 0 : rubberShift(dx);
       if (rafRef.current == null) {
         rafRef.current = requestAnimationFrame(flushRaf);
       }
@@ -138,16 +168,10 @@ export function useSwipeToReply({ enabled, onReply }: Options) {
         /* already released */
       }
       sessionRef.current = null;
+
       if (rafRef.current != null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
-      }
-      pendingKeyRef.current = null;
-
-      if (e.type === 'pointercancel') {
-        setVisual({ key: s.msgKey, offset: 0, dragging: false });
-        scheduleVisualReset();
-        return;
       }
 
       const dx = e.clientX - s.x;
@@ -155,14 +179,38 @@ export function useSwipeToReply({ enabled, onReply }: Options) {
       const success =
         optsRef.current.enabled && !s.canceled && dx >= MIN_DX && Math.abs(dy) <= MAX_ABS_DY;
 
-      setVisual({ key: s.msgKey, offset: 0, dragging: false });
+      // Spring back via CSS transition — no React involvement
+      const shiftEl = shiftElMap.current.get(s.msgKey) ?? null;
+      const trackEl = trackElMap.current.get(s.msgKey) ?? null;
+      applyShiftDOM(shiftEl, 0, true);
+      applyTrackDOM(trackEl, 0, true, false);
+
       if (success) {
         optsRef.current.onReply(s.msg);
-        e.preventDefault();
+        if (e.type !== 'pointercancel') e.preventDefault();
       }
-      scheduleVisualReset();
+
+      // Freeze inline styles at resting state after spring-back
+      clearSettleTimer();
+      const capturedKey = s.msgKey;
+      settleTimerRef.current = window.setTimeout(() => {
+        settleTimerRef.current = null;
+        const se = shiftElMap.current.get(capturedKey);
+        const te = trackElMap.current.get(capturedKey);
+        if (se) {
+          se.style.transition = 'none';
+          se.style.transform = '';
+          se.style.willChange = '';
+        }
+        if (te) {
+          te.style.transition = 'none';
+          te.style.opacity = '0';
+          te.style.transform = 'scale(0.65)';
+          te.dataset.swipeNear = 'false';
+        }
+      }, CLEANUP_DELAY_MS);
     },
-    [scheduleVisualReset],
+    [clearSettleTimer],
   );
 
   const getMessageSwipeHandlers = useCallback(
@@ -180,50 +228,10 @@ export function useSwipeToReply({ enabled, onReply }: Options) {
     return m?.id != null ? String(m.id) : '';
   }, []);
 
-  const getSwipeShiftStyle = useCallback(
-    (msg: unknown): CSSProperties => {
-      const key = msgKeyOf(msg);
-      if (!key || visual.key !== key) return {};
-      return {
-        transform: `translate3d(${visual.offset}px, 0, 0)`,
-        transition: visual.dragging ? 'none' : 'transform 0.44s cubic-bezier(0.22, 1, 0.36, 1)',
-        willChange: visual.dragging ? 'transform' : undefined,
-      };
-    },
-    [msgKeyOf, visual.dragging, visual.key, visual.offset],
-  );
-
-  const getSwipeTrackStyle = useCallback(
-    (msg: unknown): CSSProperties => {
-      const key = msgKeyOf(msg);
-      const active = Boolean(key && visual.key === key);
-      if (!active) {
-        return {
-          opacity: 0,
-          transform: 'scale(0.65)',
-          transition: 'opacity 0.28s ease, transform 0.36s cubic-bezier(0.22, 1, 0.36, 1)',
-        };
-      }
-      const p = Math.min(1, visual.offset / 42);
-      const eased = 1 - (1 - p) * (1 - p);
-      return {
-        opacity: 0.12 + 0.88 * eased,
-        transform: `scale(${0.68 + 0.32 * eased})`,
-        transition: visual.dragging
-          ? 'none'
-          : 'opacity 0.36s cubic-bezier(0.22, 1, 0.36, 1), transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
-      };
-    },
-    [msgKeyOf, visual.dragging, visual.key, visual.offset],
-  );
-
-  const isSwipeNearCommit = useCallback(
-    (msg: unknown) => {
-      const key = msgKeyOf(msg);
-      return Boolean(key && visual.key === key && visual.dragging && visual.offset >= COMMIT_HINT_AT);
-    },
-    [msgKeyOf, visual.dragging, visual.key, visual.offset],
-  );
-
-  return { getMessageSwipeHandlers, getSwipeShiftStyle, getSwipeTrackStyle, isSwipeNearCommit };
+  return {
+    getMessageSwipeHandlers,
+    registerShiftEl,
+    registerTrackEl,
+    msgKeyOf,
+  };
 }
