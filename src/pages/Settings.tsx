@@ -142,7 +142,7 @@ export function Settings() {
                   description="Launch DogitoChat when you log in to your computer. Desktop app only."
                   checked={autostart}
                   disabled={autostartBusy}
-                  onCheckedChange={async (next) => {
+                  onCheckedChange={async (next: boolean) => {
                     setAutostartBusy(true);
                     try {
                       await setAutostartEnabled(next);
