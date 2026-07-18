@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "prueba"
-version = "1.2.23"
+version = "1.2.24"
 dependencies = [
  "serde",
  "serde_json",
