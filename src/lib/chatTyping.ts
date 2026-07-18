@@ -21,19 +21,17 @@ export function typingDisplayNames(rows: ChatTypingRow[], excludeUserId: string 
 }
 
 /**
- * 1: "Ada is typing"
- * 2: "Ada and Bob are typing"
- * 3+: "Ada, Bob and Carol are typing" (up to 4 names)
- * 5+ typers: "Multiple users are typing"
+ * 1: "Ada esta escribiendo"
+ * 2+: Spanish typing labels used in chat headers and composer area.
  */
 export function formatTypingLabel(names: string[]): string {
   const n = names.length;
   if (n === 0) return '';
-  if (n > 4) return 'Multiple users are typing';
-  if (n === 1) return `${names[0]} is typing`;
-  if (n === 2) return `${names[0]} and ${names[1]} are typing`;
-  if (n === 3) return `${names[0]}, ${names[1]} and ${names[2]} are typing`;
-  return `${names[0]}, ${names[1]}, ${names[2]} and ${names[3]} are typing`;
+  if (n > 4) return 'Varias personas estan escribiendo';
+  if (n === 1) return `${names[0]} esta escribiendo`;
+  if (n === 2) return `${names[0]} y ${names[1]} estan escribiendo`;
+  if (n === 3) return `${names[0]}, ${names[1]} y ${names[2]} estan escribiendo`;
+  return `${names[0]}, ${names[1]}, ${names[2]} y ${names[3]} estan escribiendo`;
 }
 
 /** Realtime Broadcast topic per chat (instant typing; complements postgres `chat_typing`). */

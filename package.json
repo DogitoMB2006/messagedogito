@@ -1,7 +1,7 @@
 {
   "name": "prueba",
   "private": true,
-  "version": "1.2.22",
+  "version": "1.2.23",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,6 @@
   "dependencies": {
     "@choochmeque/tauri-plugin-notifications-api": "^0.4.3",
     "@insforge/sdk": "^1.2.10",
-    "@supabase/supabase-js": "^2.99.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-opener": "^2",

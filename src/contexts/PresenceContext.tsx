@@ -1,5 +1,4 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 import {
@@ -19,7 +18,7 @@ import { peerPresenceLabel } from '../lib/presenceDisplay';
 import {
   fetchPrivacySettings,
   loadCachedPrivacy,
-  migrateLocalPrivacyToSupabase,
+  migrateLocalPrivacyToBackend,
   updatePrivacySettings,
   PRIVACY_STORAGE_KEYS,
   type ManualPresence,
@@ -71,7 +70,7 @@ const PresenceContext = createContext<PresenceContextValue | undefined>(undefine
 
 export function PresenceProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  const presenceBroadcastChRef = useRef<RealtimeChannel | null>(null);
+  const presenceBroadcastChRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const cached = loadCachedPrivacy();
 
   const [manualMode, setManualModeState] = useState<ManualPresence>(() => cached.presence_manual);
@@ -243,7 +242,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     setPrivacyReady(false);
 
     void (async () => {
-      await migrateLocalPrivacyToSupabase(uid);
+      await migrateLocalPrivacyToBackend(uid);
       const { data, error } = await fetchPrivacySettings(uid);
       if (cancelled) return;
       if (data) {

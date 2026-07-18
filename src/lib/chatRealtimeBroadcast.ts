@@ -1,5 +1,3 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
-
 /** Must match `ChatWindow` topic: `public:messages:${chatId}`. */
 export function chatMessagesRealtimeTopic(chatId: string): string {
   return `public:messages:${chatId}`;
@@ -7,7 +5,7 @@ export function chatMessagesRealtimeTopic(chatId: string): string {
 
 /** Broadcast to all subscribers on the chat messages channel without requiring a prior `subscribe()` (REST). */
 export async function httpBroadcastChatMessages(
-  client: SupabaseClient,
+  client: any,
   chatId: string,
   event: string,
   payload: Record<string, unknown>,

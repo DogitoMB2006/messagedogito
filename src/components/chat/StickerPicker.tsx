@@ -21,6 +21,22 @@ type Props = {
 
 const MAX_STICKERS = 5;
 
+function getStickerObjectKey(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const objectMarker = '/objects/';
+    const objectIndex = parsed.pathname.indexOf(objectMarker);
+    if (objectIndex >= 0) {
+      return decodeURIComponent(parsed.pathname.slice(objectIndex + objectMarker.length));
+    }
+
+    const legacyParts = parsed.pathname.split('/stickers/');
+    return legacyParts.length > 1 ? legacyParts[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 export function StickerPicker({ onSelect, onClose, className }: Props) {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>('mine');
@@ -123,11 +139,9 @@ export function StickerPicker({ onSelect, onClose, className }: Props) {
     if (!user || deletingId) return;
     setDeletingId(sticker.id);
     try {
-      // Extract storage path from URL
-      const url = new URL(sticker.url);
-      const pathParts = url.pathname.split('/stickers/');
-      if (pathParts.length > 1) {
-        await supabase.storage.from('stickers').remove([pathParts[1]]);
+      const key = getStickerObjectKey(sticker.url);
+      if (key) {
+        await supabase.storage.from('stickers').remove([key]);
       }
       await supabase.from('stickers').delete().eq('id', sticker.id).eq('owner_id', user.id);
       await loadMyStickers();

@@ -1,5 +1,3 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
-
 export const FRIEND_DM_READ_EVENT = 'dogito:friend-dm-read';
 export const CHAT_READ_EVENT = 'dogito:chat-read';
 
@@ -23,7 +21,7 @@ export function dispatchChatRead(chatId: string) {
   window.dispatchEvent(new CustomEvent(CHAT_READ_EVENT, { detail: { chatId } }));
 }
 
-export async function fetchFriendDmUnreadRows(client: SupabaseClient): Promise<FriendDmUnreadRow[]> {
+export async function fetchFriendDmUnreadRows(client: any): Promise<FriendDmUnreadRow[]> {
   const { data, error } = await client.rpc('friend_dm_unread_for_me');
   if (error) {
     console.warn('friend_dm_unread_for_me', error.message);
@@ -37,7 +35,7 @@ export async function fetchFriendDmUnreadRows(client: SupabaseClient): Promise<F
   }));
 }
 
-export async function fetchGroupUnreadRows(client: SupabaseClient): Promise<GroupUnreadRow[]> {
+export async function fetchGroupUnreadRows(client: any): Promise<GroupUnreadRow[]> {
   const { data, error } = await client.rpc('group_unread_for_me');
   if (error) {
     console.warn('group_unread_for_me', error.message);
@@ -51,7 +49,7 @@ export async function fetchGroupUnreadRows(client: SupabaseClient): Promise<Grou
 }
 
 /** DM + group unread counts keyed by chat id (for ChatList). */
-export async function fetchUnreadCountByChatId(client: SupabaseClient): Promise<Map<string, number>> {
+export async function fetchUnreadCountByChatId(client: any): Promise<Map<string, number>> {
   const [dmRows, groupRows] = await Promise.all([
     fetchFriendDmUnreadRows(client),
     fetchGroupUnreadRows(client),
@@ -71,7 +69,7 @@ export function chatIdToFriendIdMap(rows: FriendDmUnreadRow[]): Map<string, stri
   return map;
 }
 
-export async function markDmChatRead(client: SupabaseClient, chatId: string): Promise<void> {
+export async function markDmChatRead(client: any, chatId: string): Promise<void> {
   const { error } = await client.rpc('mark_dm_chat_read', { p_chat_id: chatId });
   if (error) console.warn('markDmChatRead failed', error.message);
 }

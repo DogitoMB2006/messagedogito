@@ -1,14 +1,12 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
-
 export async function findOrCreateDmChatId(
-  supabase: SupabaseClient,
+  supabase: any,
   currentUserId: string,
   friendId: string,
 ): Promise<{ chatId: string } | { error: string }> {
   if (friendId === currentUserId) return { error: 'self' };
 
   const { data: myChats } = await supabase.from('chat_participants').select('chat_id').eq('user_id', currentUserId);
-  const myChatIds = myChats?.map((c) => c.chat_id) || [];
+  const myChatIds = myChats?.map((c: any) => c.chat_id) || [];
 
   if (myChatIds.length > 0) {
     const { data: common } = await supabase
@@ -16,7 +14,7 @@ export async function findOrCreateDmChatId(
       .select('chat_id')
       .eq('user_id', friendId)
       .in('chat_id', myChatIds);
-    const sharedIds = common?.map((c) => c.chat_id).filter(Boolean) ?? [];
+    const sharedIds = common?.map((c: any) => c.chat_id).filter(Boolean) ?? [];
     if (sharedIds.length > 0) {
       const { data: dmChats } = await supabase
         .from('chats')

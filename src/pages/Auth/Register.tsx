@@ -5,11 +5,10 @@ import { MessageSquare, Mail, Lock, AtSign } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { supabase } from '../../lib/supabase';
-import type { AuthError } from '@supabase/supabase-js';
 
-function formatSignUpError(err: AuthError): string {
+function formatSignUpError(err: { message?: string; code?: string; error?: string }): string {
   const msg = (err.message || '').trim();
-  const combined = `${msg} ${(err as { code?: string }).code || ''}`.toLowerCase();
+  const combined = `${msg} ${err.code || ''} ${err.error || ''}`.toLowerCase();
   // GoTrue returns this for duplicate email — users often think it means "username".
   if (
     combined.includes('user already registered') ||
@@ -27,13 +26,36 @@ export function Register() {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [pendingVerification, setPendingVerification] = useState<{ email: string; username: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+
+  const finishProfileSetup = async (userId: string, safeUsername: string) => {
+    const { error: profileError } = await supabase
+      .from('users')
+      .update({
+        username: safeUsername,
+        display_name: safeUsername,
+      })
+      .eq('id', userId);
+
+    if (profileError) {
+      const code = (profileError as { code?: string }).code;
+      const pmsg = profileError.message || '';
+      if (code === '23505' || /unique|duplicate/i.test(pmsg)) {
+        throw new Error('That username is already taken. Pick another and try again.');
+      }
+      throw new Error(pmsg || 'Could not create your profile.');
+    }
+  };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setMessage(null);
     setLoading(true);
 
     const safeUsername = username.toLowerCase().replace(/\s/g, '');
@@ -76,36 +98,60 @@ export function Register() {
       return;
     }
 
+    if (data?.requireEmailVerification || !data?.accessToken) {
+      setPendingVerification({ email: email.trim(), username: safeUsername });
+      setMessage('We sent a verification code to your email. Enter it below to finish creating your account.');
+      setLoading(false);
+      return;
+    }
+
     if (!data.user) {
       setError('Sign up did not complete. Please try again.');
       setLoading(false);
       return;
     }
 
-    // With "confirm email" enabled there is often no session yet — RLS may block this insert.
-    const { error: profileError } = await supabase.from('users').insert({
-      id: data.user.id,
-      username: safeUsername,
-      display_name: safeUsername,
+    try {
+      await finishProfileSetup(data.user.id, safeUsername);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create your profile.');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
+    navigate('/');
+  };
+
+  const handleVerifyEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingVerification) return;
+
+    const otp = verificationCode.trim();
+    if (!otp) {
+      setError('Enter the verification code from your email.');
+      return;
+    }
+
+    setError(null);
+    setMessage(null);
+    setLoading(true);
+
+    const { data, error: verifyError } = await supabase.auth.verifyEmail({
+      email: pendingVerification.email,
+      otp,
     });
 
-    if (profileError) {
-      const code = (profileError as { code?: string }).code;
-      const pmsg = profileError.message || '';
-      if (code === '23505' || /unique|duplicate/i.test(pmsg)) {
-        setError('That username is already taken. Pick another and try again.');
-        setLoading(false);
-        return;
-      }
-      if (code === '42501' || /row-level security|policy|permission denied/i.test(pmsg)) {
-        setError(
-          'Account created. If email confirmation is on, open the link in your email, then sign in. Your profile will finish setting up when you log in.',
-        );
-        setLoading(false);
-        navigate('/login');
-        return;
-      }
-      setError(pmsg || 'Could not create your profile.');
+    if (verifyError || !data?.user) {
+      setError(verifyError?.message || 'Invalid or expired verification code.');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      await finishProfileSetup(data.user.id, pendingVerification.username);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create your profile.');
       setLoading(false);
       return;
     }
@@ -128,23 +174,51 @@ export function Register() {
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-tr from-accent to-primary shadow-lg shadow-accent/20 text-white mb-6">
             <MessageSquare size={32} />
           </div>
-          <h2 className="text-3xl font-bold tracking-tight text-foreground">Create account</h2>
-          <p className="mt-2 text-sm text-muted-foreground">Join the conversation today</p>
+          <h2 className="text-3xl font-bold tracking-tight text-foreground">
+            {pendingVerification ? 'Verify email' : 'Create account'}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {pendingVerification ? `Enter the code sent to ${pendingVerification.email}` : 'Join the conversation today'}
+          </p>
         </motion.div>
 
         <motion.form
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.1, type: "spring", bounce: 0.4 }}
-          onSubmit={handleRegister}
+          onSubmit={pendingVerification ? handleVerifyEmail : handleRegister}
           className="space-y-6 rounded-2xl border border-border/50 bg-secondary/30 p-8 backdrop-blur-xl shadow-2xl"
         >
+          {message && (
+            <div className="bg-primary/10 text-primary text-sm p-3 rounded-md mb-4 border border-primary/20">
+              {message}
+            </div>
+          )}
           {error && (
             <div className="bg-red-500/10 text-red-500 text-sm p-3 rounded-md mb-4 border border-red-500/20">
               {error}
             </div>
           )}
-          <div className="space-y-4">
+          {pendingVerification ? (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Verification code</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-2.5 h-5 w-5 text-muted-foreground" />
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="123456"
+                    className="pl-10 h-11 tracking-widest"
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value.replace(/\s/g, ''))}
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">Email</label>
               <div className="relative">
@@ -189,10 +263,27 @@ export function Register() {
                 />
               </div>
             </div>
-          </div>
+            </div>
+          )}
           <Button type="submit" disabled={loading} className="w-full h-11 text-base bg-accent hover:bg-accent/90 shadow-lg shadow-accent/20">
-            {loading ? 'Creating...' : 'Create Account'}
+            {loading ? (pendingVerification ? 'Verifying...' : 'Creating...') : pendingVerification ? 'Verify Email' : 'Create Account'}
           </Button>
+          {pendingVerification && (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={loading}
+              className="w-full"
+              onClick={() => {
+                setPendingVerification(null);
+                setVerificationCode('');
+                setError(null);
+                setMessage(null);
+              }}
+            >
+              Use a different email
+            </Button>
+          )}
           <p className="text-center text-sm text-muted-foreground">
             Already have an account?{' '}
             <Link to="/login" className="font-medium text-primary hover:underline hover:text-primary/80 transition-colors">Sign in</Link>

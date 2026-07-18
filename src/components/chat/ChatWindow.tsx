@@ -274,6 +274,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
   const messageNodeMapRef = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingBroadcastRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const latestMessageCreatedAtRef = useRef<string | null>(null);
   /** Bumps each chat realtime effect run so stale async work cannot clear refs after a newer run. */
   const chatRealtimeSetupGenRef = useRef(0);
   /** True after we've successfully loaded this chat as a group (so a missing row = deleted, not a bad DM link). */
@@ -288,6 +289,15 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     setRemovedFromGroup(false);
     setGroupExitKind(null);
   }, [chatId]);
+
+  useEffect(() => {
+    latestMessageCreatedAtRef.current = messages.reduce<string | null>((latest, msg) => {
+      const createdAt = typeof msg?.created_at === 'string' ? msg.created_at : null;
+      if (!createdAt) return latest;
+      if (!latest || new Date(createdAt).getTime() > new Date(latest).getTime()) return createdAt;
+      return latest;
+    }, null);
+  }, [messages]);
 
   const isNearBottom = useCallback(() => {
     const el = messagesScrollRef.current;
@@ -1254,6 +1264,68 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
     })();
   }, [chatId, isGroup, removedFromGroup, loading, otherUser?.id, user?.id]);
 
+  useEffect(() => {
+    if (!user?.id || !chatId || loading || removedFromGroup) return;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const fetchNewMessages = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        let query = supabase
+          .from('messages')
+          .select('*')
+          .eq('chat_id', chatId)
+          .order('created_at', { ascending: true });
+
+        const latest = latestMessageCreatedAtRef.current;
+        if (latest) query = query.gte('created_at', latest);
+
+        const { data } = await query;
+        if (cancelled || !data?.length) return;
+
+        let receivedOtherMessage = false;
+        const shouldStick = stickToBottomRef.current && isNearBottom();
+
+        setMessages((prev) => {
+          let next = prev;
+          const existingIds = new Set(prev.map((msg) => (msg?.id != null ? String(msg.id) : '')).filter(Boolean));
+          for (const row of data) {
+            const id = row?.id != null ? String(row.id) : '';
+            const isNew = id && !existingIds.has(id);
+            if (isNew && row?.sender_id && String(row.sender_id) !== String(user.id)) {
+              receivedOtherMessage = true;
+            }
+            next = mergeMessageList(next, row);
+            if (id) existingIds.add(id);
+          }
+          return next;
+        });
+
+        if (shouldStick) {
+          requestAnimationFrame(() => scrollToBottom('smooth', { force: true }));
+        }
+
+        if (receivedOtherMessage) {
+          void markDmChatRead(supabase, chatId);
+          if (isGroupRef.current) dispatchChatRead(chatId);
+          else if (otherUser?.id) dispatchFriendDmRead(String(otherUser.id));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void fetchNewMessages();
+    const interval = window.setInterval(fetchNewMessages, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [chatId, isNearBottom, loading, otherUser?.id, removedFromGroup, scrollToBottom, user?.id]);
+
   const broadcastGroupSyncToPeers = useCallback(() => {
     void httpBroadcastChatMessages(supabase, chatId, 'group_sync', { chatId }).catch((e) =>
       console.warn('group_sync http broadcast failed', e),
@@ -1482,6 +1554,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
           });
           emitChatTypingBridge({ kind: 'stop', chatId: String(chatId), userId: uid });
         });
+      typingBroadcastRef.current = typingBroadcastChannel;
 
       void (async () => {
         try {
@@ -1494,7 +1567,6 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             void supabase.removeChannel(channel);
             return;
           }
-          typingBroadcastRef.current = typingBroadcastChannel;
         } catch (e) {
           void supabase.removeChannel(typingBroadcastChannel);
           void supabase.removeChannel(channel);
@@ -1760,6 +1832,10 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   {Object.keys(senderNameById).length} members
                 </p>
               </div>
+            ) : typingBannerRow ? (
+              <div className="text-primary/90 [&_p]:text-primary/90" aria-live="polite">
+                {typingBannerRow}
+              </div>
             ) : (
               <p
                 className={cn(
@@ -1767,7 +1843,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   dmPeerPresence ? peerPresenceSubtextClass(dmPeerPresence) : 'text-muted-foreground',
                 )}
               >
-                {otherUser ? (dmPeerPresence ? peerPresenceLabel(dmPeerPresence) : 'Offline') : '…'}
+                {otherUser ? (dmPeerPresence ? peerPresenceLabel(dmPeerPresence) : 'Offline') : '...'}
               </p>
             )}
           </div>
@@ -2011,9 +2087,18 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
             !immPrevIsLeave &&
             !timeGapBreak &&
             String(immPrev.sender_id) === String(msg.sender_id);
+          const immNext = idx < messages.length - 1 ? messages[idx + 1] : null;
+          const immNextIsLeave = immNext ? isRenderedLeaveMessage(immNext, isGroup) : false;
+          const sameSenderNext =
+            !!immNext &&
+            !immNextIsLeave &&
+            new Date(immNext.created_at).getTime() - new Date(msg.created_at).getTime() <=
+              MESSAGE_CLUSTER_GAP_MS &&
+            String(immNext.sender_id) === String(msg.sender_id);
           const runStart = !sameSenderRun;
+          const runEnd = !sameSenderNext;
           const clusterGapClass =
-            idx === 0 ? '' : sameSenderRun ? 'mt-1' : immPrevIsLeave ? 'mt-3' : 'mt-5';
+            idx === 0 ? '' : sameSenderRun ? 'mt-0.5' : immPrevIsLeave ? 'mt-3' : 'mt-4';
           const leaveGapClass = idx === 0 ? '' : immPrevIsLeave ? 'mt-2' : 'mt-4';
 
           if (isLeaveSystem) {
@@ -2075,7 +2160,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
               <div
                 ref={(el) => { const k = msgKeyOf(msg); if (k) registerShiftEl(k, el); }}
                 className={cn(
-                  `relative z-[1] flex min-w-0 items-start max-w-[min(86vw,30rem)] md:max-w-[min(70%,28rem)] gap-2.5 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'}`,
+                  `relative z-[1] flex min-w-0 items-start max-w-[min(88vw,36rem)] md:max-w-[min(78%,34rem)] gap-2.5 ${isGroup ? (isMe ? 'flex-row-reverse' : 'flex-row') : isMe ? 'flex-row-reverse' : 'flex-row'}`,
                   msgId && highlightedMessageId && String(msgId) === highlightedMessageId
                     ? 'ring-2 ring-primary/70 rounded-2xl shadow-[0_0_0_4px_rgba(59,130,246,0.18)] transition-all'
                     : '',
@@ -2143,12 +2228,20 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   )}
                 <div
                   className={[
-                    isMediaMessage && !isEditingThis ? 'p-0 bg-transparent border border-border/40 rounded-2xl overflow-hidden' : 'px-4 py-3 md:py-2.5 rounded-2xl',
+                    isMediaMessage && !isEditingThis ? 'p-0 bg-transparent border border-border/40 rounded-2xl overflow-hidden' : 'px-4 py-3 md:py-2.5 rounded-[1.15rem]',
                     isMediaMessage && !isEditingThis
                       ? ''
                       : isMe
-                        ? 'bg-primary text-primary-foreground rounded-tr-sm shadow-md shadow-primary/20'
-                        : 'bg-secondary/80 border border-border/50 text-foreground rounded-tl-sm backdrop-blur-sm',
+                        ? cn(
+                            'bg-primary text-primary-foreground shadow-md shadow-primary/20',
+                            runStart ? 'rounded-tr-sm' : 'rounded-tr-md',
+                            runEnd ? 'rounded-br-sm' : 'rounded-br-md',
+                          )
+                        : cn(
+                            'bg-secondary/80 border border-border/50 text-foreground backdrop-blur-sm',
+                            runStart ? 'rounded-tl-sm' : 'rounded-tl-md',
+                            runEnd ? 'rounded-bl-sm' : 'rounded-bl-md',
+                          ),
                     !isMediaMessage || isEditingThis ? 'min-w-0 max-w-full overflow-hidden' : '',
                   ].join(' ')}
                   style={
@@ -2209,6 +2302,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                   ) : null}
                 </div>
 
+                {runEnd ? (
                 <div className={`flex items-center gap-1.5 px-1.5 ${sameSenderRun ? 'mt-0.5' : 'mt-1'}`}>
                   <span className="text-[10px] text-muted-foreground/90">
                     {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -2267,6 +2361,7 @@ export function ChatWindow({ chatId, onBack, onToggleProfile, isProfileOpen, onP
                     </button>
                   )}
                 </div>
+                ) : null}
                 </div>
               </div>
             </motion.div>

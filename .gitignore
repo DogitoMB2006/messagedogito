@@ -51,3 +51,18 @@ supabase/friend_dm_unread.sql
 supabase/users_presence_realtime_rls.sql
 supabase/user_presence.sql
 supabase/chat_typing.sql
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf

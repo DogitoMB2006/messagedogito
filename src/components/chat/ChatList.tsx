@@ -249,6 +249,9 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
     if (!user?.id) return;
 
     void loadChats();
+    const refreshInterval = window.setInterval(() => {
+      void loadChats();
+    }, 3000);
 
     const channel = supabase
       .channel('public:messages:all')
@@ -314,6 +317,7 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       .subscribe();
 
     return () => {
+      window.clearInterval(refreshInterval);
       supabase.removeChannel(channel);
       supabase.removeChannel(inbox);
     };
@@ -442,7 +446,7 @@ export function ChatList({ activeChat, onSelectChat, onClearActiveIfMatch }: Cha
       await loadChats();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Could not leave the group.';
-      alert(`${msg} Run supabase/group_leave.sql if needed.`);
+      alert(`${msg} Verify the InsForge backend migration is applied.`);
     } finally {
       setLeaveLoading(false);
     }

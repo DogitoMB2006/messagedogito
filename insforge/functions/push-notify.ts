@@ -1,9 +1,10 @@
-import { createClient } from 'npm:@supabase/supabase-js@2';
+import { createClient } from 'npm:@insforge/sdk';
 import { JWT } from 'npm:google-auth-library@9';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type',
 };
 
 type PushRequest = {
@@ -27,6 +28,14 @@ function readEnv(name: string): string {
   return value;
 }
 
+function readFirstEnv(names: string[]): string {
+  for (const name of names) {
+    const value = Deno.env.get(name);
+    if (value) return value;
+  }
+  throw new Error(`Missing env ${names.join(' or ')}`);
+}
+
 async function getAccessToken(): Promise<string> {
   const client = new JWT({
     email: readEnv('FIREBASE_CLIENT_EMAIL'),
@@ -39,28 +48,27 @@ async function getAccessToken(): Promise<string> {
   return token.access_token;
 }
 
-Deno.serve(async (req) => {
+export default async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = readEnv('SUPABASE_URL');
-    const supabaseAnonKey = readEnv('SUPABASE_ANON_KEY');
-    const supabaseServiceRoleKey = readEnv('SUPABASE_SERVICE_ROLE_KEY');
-
+    const baseUrl = readFirstEnv(['INSFORGE_BASE_URL', 'INSFORGE_URL']);
+    const apiKey = readFirstEnv(['API_KEY', 'INSFORGE_API_KEY']);
     const authHeader = req.headers.get('Authorization') ?? '';
-    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
+    const userToken = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-    const {
-      data: { user },
-      error: userError,
-    } = await userClient.auth.getUser();
+    if (!userToken) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
 
-    if (userError || !user) {
+    const userClient = createClient({ baseUrl, edgeFunctionToken: userToken });
+    const adminClient = createClient({ baseUrl, anonKey: apiKey });
+
+    const { data: userData, error: userError } = await userClient.auth.getCurrentUser();
+    const user = userData?.user;
+    if (userError || !user?.id) {
       return json({ error: 'Unauthorized' }, 401);
     }
 
@@ -77,7 +85,7 @@ Deno.serve(async (req) => {
       return json({ error: 'Invalid payload' }, 400);
     }
 
-    const { data: callerMembership } = await adminClient
+    const { data: callerMembership } = await adminClient.database
       .from('chat_participants')
       .select('chat_id')
       .eq('chat_id', chatId)
@@ -88,18 +96,18 @@ Deno.serve(async (req) => {
       return json({ error: 'Forbidden' }, 403);
     }
 
-    const { data: participantRows } = await adminClient
+    const { data: participantRows } = await adminClient.database
       .from('chat_participants')
       .select('user_id')
       .eq('chat_id', chatId)
       .in('user_id', recipientUserIds);
 
-    const allowedRecipientIds = new Set((participantRows ?? []).map((row) => String(row.user_id)));
+    const allowedRecipientIds = new Set((participantRows ?? []).map((row: { user_id: string }) => String(row.user_id)));
     if (allowedRecipientIds.size === 0) {
       return json({ delivered: 0, skipped: recipientUserIds.length });
     }
 
-    const { data: tokenRows } = await adminClient
+    const { data: tokenRows } = await adminClient.database
       .from('push_tokens')
       .select('id, token, user_id')
       .in('user_id', Array.from(allowedRecipientIds))
@@ -114,36 +122,30 @@ Deno.serve(async (req) => {
     const firebaseProjectId = readEnv('FIREBASE_PROJECT_ID');
 
     const responses = await Promise.all(
-      tokenRows.map(async (tokenRow) => {
-        const response = await fetch(
-          `https://fcm.googleapis.com/v1/projects/${firebaseProjectId}/messages:send`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              message: {
-                token: tokenRow.token,
-                notification: { title, body },
-                data: {
-                  chatId,
-                  kind,
-                },
-                android: {
-                  priority: 'high',
-                  notification: {
-                    channel_id: kind === 'incoming_call' ? 'calls' : 'messages',
-                    click_action: 'OPEN_ACTIVITY_1',
-                    default_sound: true,
-                    notification_priority: kind === 'incoming_call' ? 'PRIORITY_MAX' : 'PRIORITY_HIGH',
-                  },
+      tokenRows.map(async (tokenRow: { id: string; token: string }) => {
+        const response = await fetch(`https://fcm.googleapis.com/v1/projects/${firebaseProjectId}/messages:send`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: {
+              token: tokenRow.token,
+              notification: { title, body },
+              data: { chatId, kind },
+              android: {
+                priority: 'high',
+                notification: {
+                  channel_id: kind === 'incoming_call' ? 'calls' : 'messages',
+                  click_action: 'OPEN_ACTIVITY_1',
+                  default_sound: true,
+                  notification_priority: kind === 'incoming_call' ? 'PRIORITY_MAX' : 'PRIORITY_HIGH',
                 },
               },
-            }),
-          },
-        );
+            },
+          }),
+        });
 
         if (response.ok) {
           return { ok: true, tokenId: tokenRow.id };
@@ -151,7 +153,7 @@ Deno.serve(async (req) => {
 
         const errorText = await response.text();
         if (errorText.includes('UNREGISTERED') || errorText.includes('registration-token-not-registered')) {
-          await adminClient
+          await adminClient.database
             .from('push_tokens')
             .update({ disabled_at: new Date().toISOString() })
             .eq('id', tokenRow.id);
@@ -161,12 +163,12 @@ Deno.serve(async (req) => {
       }),
     );
 
-    const delivered = responses.filter((entry) => entry.ok).length;
-    const failed = responses.filter((entry) => !entry.ok).length;
-
-    return json({ delivered, failed });
+    return json({
+      delivered: responses.filter((entry) => entry.ok).length,
+      failed: responses.filter((entry) => !entry.ok).length,
+    });
   } catch (error) {
     console.error(error);
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);
   }
-});
+}

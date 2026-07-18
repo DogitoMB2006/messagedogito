@@ -1,7 +1,7 @@
 /** Set by PresenceProvider when status is busy; read by AuthContext before desktop notifications. */
 let notificationsSilenced = false;
 
-/** Set from user privacy settings (Supabase). Default true until loaded. */
+/** Set from user privacy settings. Default true until loaded. */
 let desktopNotificationsEnabled = true;
 
 export function setPresenceNotificationsSilenced(silenced: boolean) {

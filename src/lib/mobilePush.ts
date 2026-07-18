@@ -1,4 +1,3 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { getVersion } from '@tauri-apps/api/app';
 import { isNativeAndroidApp } from './runtime';
 
@@ -12,7 +11,7 @@ interface PushPayload {
 
 const REGISTERED_PUSH_USER_KEY = 'dogito.androidPushRegisteredUser';
 
-export async function ensureAndroidPushRegistration(supabase: SupabaseClient, userId: string): Promise<void> {
+export async function ensureAndroidPushRegistration(supabase: any, userId: string): Promise<void> {
   if (!isNativeAndroidApp()) return;
 
   try {
@@ -61,7 +60,7 @@ export async function ensureAndroidPushRegistration(supabase: SupabaseClient, us
   }
 }
 
-export async function unregisterAndroidPushDevice(supabase: SupabaseClient, userId: string): Promise<void> {
+export async function unregisterAndroidPushDevice(supabase: any, userId: string): Promise<void> {
   if (!isNativeAndroidApp()) return;
 
   try {
@@ -82,7 +81,7 @@ export function shouldRefreshAndroidPushRegistration(userId: string): boolean {
   return localStorage.getItem(REGISTERED_PUSH_USER_KEY) !== userId;
 }
 
-export async function sendMobilePushNotification(supabase: SupabaseClient, payload: PushPayload): Promise<void> {
+export async function sendMobilePushNotification(supabase: any, payload: PushPayload): Promise<void> {
   if (payload.recipientUserIds.length === 0) return;
 
   try {

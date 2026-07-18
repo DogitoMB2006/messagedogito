@@ -1,13 +1,10 @@
-import type { RealtimeChannel } from '@supabase/supabase-js';
-import { REALTIME_SUBSCRIBE_STATES } from '@supabase/realtime-js';
-
 /**
  * Resolves when the channel has joined; avoids `send()` falling back to REST before the socket can push.
  * @param joinTimeoutMs Passed to Realtime `subscribe(_, joinTimeoutMs)` — default SDK join timeout (~10s) is too low for channels with many postgres bindings.
  * @param isCancelled When true, terminal states (e.g. CLOSED from `removeChannel` during Strict Mode or chat switch) resolve quietly instead of rejecting.
  */
 export function whenRealtimeSubscribed(
-  channel: RealtimeChannel,
+  channel: any,
   joinTimeoutMs = 30_000,
   isCancelled?: () => boolean,
 ): Promise<void> {
@@ -21,15 +18,11 @@ export function whenRealtimeSubscribed(
       reject(new Error('Realtime subscribe timed out'));
     }, outerMs);
     channel.subscribe(
-      (status) => {
-        if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) {
+      (status: string) => {
+        if (status === 'SUBSCRIBED') {
           window.clearTimeout(timer);
           resolve();
-        } else if (
-          status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR ||
-          status === REALTIME_SUBSCRIBE_STATES.TIMED_OUT ||
-          status === REALTIME_SUBSCRIBE_STATES.CLOSED
-        ) {
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           window.clearTimeout(timer);
           if (isCancelled?.()) {
             resolve();

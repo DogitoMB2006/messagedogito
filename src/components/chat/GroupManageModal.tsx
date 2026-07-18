@@ -144,7 +144,7 @@ export function GroupManageModal({
       onSyncPeers?.();
     } catch (e) {
       console.error(e);
-      alert('Could not transfer ownership. Run supabase/group_owner_transfer_and_delete.sql if this is new.');
+      alert('Could not transfer ownership. Verify the InsForge backend migration is applied.');
     } finally {
       setBusy(null);
     }
@@ -166,7 +166,7 @@ export function GroupManageModal({
       onGroupDeleted?.();
     } catch (e) {
       console.error(e);
-      alert('Could not delete the group. Run supabase/group_owner_transfer_and_delete.sql if this is new.');
+      alert('Could not delete the group. Verify the InsForge backend migration is applied.');
     } finally {
       setBusy(null);
     }

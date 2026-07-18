@@ -110,8 +110,8 @@ export async function updatePrivacySettings(
   return { data: settings, error: null };
 }
 
-/** Push legacy localStorage values to Supabase once columns exist. */
-export async function migrateLocalPrivacyToSupabase(userId: string): Promise<void> {
+/** Push legacy localStorage values to the backend once columns exist. */
+export async function migrateLocalPrivacyToBackend(userId: string): Promise<void> {
   const cached = loadCachedPrivacy();
   const { data: remote } = await fetchPrivacySettings(userId);
   if (!remote) {

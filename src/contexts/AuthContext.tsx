@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { isGroupLeaveMessage } from '../lib/groupMessageMarkers';
 import { getActiveChatIdForNotifications } from '../lib/activeChatScope';
@@ -27,9 +26,12 @@ export interface UserProfile {
   bio: string | null;
 }
 
+type AuthSession = { user: AuthUser; access_token?: string | null; accessToken?: string | null };
+type AuthUser = { id: string; email?: string | null; [key: string]: unknown };
+
 interface AuthContextType {
-  session: Session | null;
-  user: SupabaseUser | null;
+  session: AuthSession | null;
+  user: AuthUser | null;
   profile: UserProfile | null;
   loading: boolean;
   refreshProfile: () => Promise<void>;
@@ -39,8 +41,8 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<SupabaseUser | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const senderCacheRef = useRef<Map<string, { name: string; avatarUrl: string | null }>>(new Map());
@@ -80,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async function getInitialSession() {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) console.error("Supabase getSession error:", error);
+        if (error) console.error("InsForge getSession error:", error);
 
         if (mounted) {
           setSession(session);

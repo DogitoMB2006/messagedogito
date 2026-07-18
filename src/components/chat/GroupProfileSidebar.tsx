@@ -71,7 +71,7 @@ export function GroupProfileSidebar({ chatId, onClose, onLeftGroup }: GroupProfi
       setNotificationsMuted(next);
     } catch (e) {
       console.error(e);
-      alert('Could not update notification settings. Run supabase/group_notifications_mute.sql in the SQL editor.');
+      alert('Could not update notification settings. Verify the InsForge backend migration is applied.');
     } finally {
       setMuteToggling(false);
     }
@@ -93,7 +93,7 @@ export function GroupProfileSidebar({ chatId, onClose, onLeftGroup }: GroupProfi
       onLeftGroup?.();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Could not leave the group.';
-      alert(`${msg} If this is new, run supabase/group_leave.sql in the SQL editor.`);
+      alert(`${msg} Verify the InsForge backend migration is applied.`);
     } finally {
       setLeaveLoading(false);
     }
